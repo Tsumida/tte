@@ -1,9 +1,10 @@
-use std::cmp::Ordering;
+use std::cmp::{Ordering, max};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::{cmp::min, collections::BTreeMap};
 
 use rust_decimal::Decimal;
+use rust_decimal::prelude::Zero;
 
 use crate::common::err_code;
 use crate::common::types::{Direction, Order, OrderID, OrderState, OrderType, SeqID, TimeInForce};
@@ -19,7 +20,7 @@ pub(crate) struct MatchRecord {
     maker_order_id: OrderID,
     is_taker_fulfilled: bool,
     is_maker_fulfilled: bool,
-    make_state: OrderState, // 对于maker，matchResult中只可能是F\PF; 在ob中，只能是Pending\PF
+    maker_state: OrderState, // 对于maker，matchResult中只可能是F\PF; 在ob中，只能是Pending\PF
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +101,6 @@ impl Ord for KeyExt<OrderBookKey> {
 
 // bid: (price desc, seq_id asc)
 // ask: (price asc , seq_id asc)
-
 pub(crate) struct BTreeOrderQueue {
     direction: Direction,
     orders: BTreeMap<KeyExt<OrderBookKey>, MakerOrder>,
@@ -128,6 +128,7 @@ impl BTreeOrderQueue {
             KeyExt::Bid(key) | KeyExt::Ask(key) => (key.clone(), v.clone()),
         })
     }
+
     // find next k-v bigger than give key
     fn next(&self, key: &OrderBookKey) -> Option<(OrderBookKey, MakerOrder)> {
         let search_key = KeyExt::new(self.direction, key.clone());
@@ -139,9 +140,45 @@ impl BTreeOrderQueue {
             KeyExt::Bid(key) | KeyExt::Ask(key) => (key.clone(), v.clone()),
         })
     }
+
+    fn get_aggregated_qty(&self, depth: usize) -> Vec<(Decimal, Decimal)> {
+        let mut cnt = 0;
+        let mut last_price = Decimal::ZERO;
+        let mut current_qty = Decimal::ZERO;
+        let mut agg = Vec::with_capacity(depth);
+        for (_, order) in self.orders.iter() {
+            if cnt >= depth {
+                break;
+            }
+            if last_price != order.order.price {
+                last_price = order.order.price;
+                current_qty += order.match_state.remain_qty;
+                agg.push((last_price, current_qty));
+                cnt += 1;
+
+                current_qty = Decimal::ZERO;
+            }
+        }
+
+        agg
+    }
 }
 
-// // 卖单队列实现 (价格升序，时间升序)
+pub struct OrderbookSnapshot {
+    pub depth: usize,
+    pub bid_orders: Vec<(Decimal, Decimal)>,
+    pub ask_orders: Vec<(Decimal, Decimal)>,
+    pub last_seq_id: u64,
+}
+
+pub trait OrderBookSnapshotHandler {
+    fn take_snapshot(&self, depth: usize) -> Result<OrderbookSnapshot, OrderBookErr>;
+}
+
+pub trait OrderBookRequestHandler {
+    fn place_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr>;
+}
+
 pub(crate) struct OrderBook {
     seq_id: SeqID, // last seqID had ever seen. for dedup & ignore outdated request
     order_id_to_orderbook_key: HashMap<OrderID, OrderBookKey>,
@@ -149,8 +186,9 @@ pub(crate) struct OrderBook {
     ask_orders: BTreeOrderQueue,
 }
 
+// OrderBook需要保证顺序接收OBRequest
 impl OrderBook {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             seq_id: 0,
             order_id_to_orderbook_key: HashMap::new(),
@@ -159,24 +197,8 @@ impl OrderBook {
         }
     }
 
-    fn match_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr> {
-        if order.post_only {
-            return self.post_order(order);
-        }
-
-        match (order.order_type, order.time_in_force) {
-            (OrderType::Limit, TimeInForce::GTK)
-            | (OrderType::Market, TimeInForce::IOC)
-            | (OrderType::Market, TimeInForce::FOK) => self.match_basic_order(MakerOrder {
-                order: order,
-                match_state: MatchState {
-                    remain_qty: Decimal::ZERO, // 作为taker，为0
-                    filled_qty: Decimal::ZERO,
-                },
-                order_state: OrderState::Pending,
-            }),
-            _ => Err(OrderBookErr::new(err_code::ERR_OB_ORDER_TYPE_TIF)), // 未实现其他类型
-        }
+    fn advance_seq_id(&mut self, seq_id: u64) {
+        self.seq_id = max(self.seq_id, seq_id);
     }
 
     fn post_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr> {
@@ -256,7 +278,7 @@ impl OrderBook {
                     maker_order_id: maker.order.order_id.clone(),
                     is_taker_fulfilled: total_filled_qty + filled_qty >= taker.order.target_qty, // consider over match
                     is_maker_fulfilled: filled_qty >= maker.match_state.remain_qty,
-                    make_state: if filled_qty >= maker.match_state.remain_qty {
+                    maker_state: if filled_qty >= maker.match_state.remain_qty {
                         OrderState::Filled
                     } else {
                         OrderState::PartiallyFilled
@@ -359,6 +381,46 @@ impl OrderBook {
     }
 }
 
+impl OrderBookRequestHandler for OrderBook {
+    fn place_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr> {
+        if order.seq_id <= self.seq_id {
+            return Err(OrderBookErr::new(err_code::ERR_OB_INVALID_SEQ_ID));
+        }
+        self.advance_seq_id(order.seq_id);
+
+        if order.post_only {
+            return self.post_order(order);
+        }
+
+        match (order.order_type, order.time_in_force) {
+            (OrderType::Limit, TimeInForce::GTK)
+            | (OrderType::Market, TimeInForce::IOC)
+            | (OrderType::Market, TimeInForce::FOK) => self.match_basic_order(MakerOrder {
+                order: order,
+                match_state: MatchState {
+                    remain_qty: Decimal::ZERO, // 作为taker，为0
+                    filled_qty: Decimal::ZERO,
+                },
+                order_state: OrderState::Pending,
+            }),
+            _ => Err(OrderBookErr::new(err_code::ERR_OB_ORDER_TYPE_TIF)), // 未实现其他类型
+        }
+    }
+}
+
+impl OrderBookSnapshotHandler for OrderBook {
+    fn take_snapshot(&self, depth: usize) -> Result<OrderbookSnapshot, OrderBookErr> {
+        let bid_orders = self.bid_orders.get_aggregated_qty(depth);
+        let ask_orders = self.ask_orders.get_aggregated_qty(depth);
+
+        Ok(OrderbookSnapshot {
+            depth,
+            bid_orders,
+            ask_orders,
+            last_seq_id: self.seq_id,
+        })
+    }
+}
 #[derive(Debug)]
 pub(crate) struct OrderBookErr {
     err_code: i32,
@@ -380,7 +442,8 @@ impl std::fmt::Display for OrderBookErr {
 mod test {
     use crate::common::types::{Direction, Order, OrderID, OrderState, OrderType, TimeInForce};
     use crate::match_engine::orderbook::{
-        KeyExt, MatchResult, OrderBook, OrderBookErr, OrderBookKey,
+        KeyExt, MatchResult, OrderBook, OrderBookErr, OrderBookKey, OrderBookRequestHandler,
+        OrderBookSnapshotHandler,
     };
     use rust_decimal::Decimal;
     use rust_decimal::prelude::FromPrimitive;
@@ -398,7 +461,7 @@ mod test {
             price: Decimal::from_f64(price).unwrap(),
             target_qty: Decimal::from_f64(qty).unwrap(),
         };
-        _ = ob.match_order(order)
+        _ = ob.place_order(order)
     }
 
     fn add_limit_order(
@@ -419,7 +482,7 @@ mod test {
             price: Decimal::from_f64(price).unwrap(),
             target_qty: Decimal::from_f64(qty).unwrap(),
         };
-        ob.match_order(order)
+        ob.place_order(order)
     }
 
     #[test]
@@ -593,5 +656,28 @@ mod test {
             ask_peek2.match_state.remain_qty,
             Decimal::from_f64(15.0).unwrap(),
         );
+    }
+
+    #[test]
+    fn test_snapshot() {
+        let mut ob = OrderBook::new();
+        post_limit_order(&mut ob, Direction::Buy, 102.0, 10.0);
+        post_limit_order(&mut ob, Direction::Buy, 101.0, 5.0);
+        post_limit_order(&mut ob, Direction::Buy, 100.0, 20.0);
+        post_limit_order(&mut ob, Direction::Sell, 101.0, 30.0);
+
+        let snapshot = ob.take_snapshot(2).unwrap();
+        assert_eq!(
+            vec![
+                (Decimal::from(102), Decimal::from(10)),
+                (Decimal::from(101), Decimal::from(5)),
+            ],
+            snapshot.bid_orders,
+        );
+        assert_eq!(
+            vec![(Decimal::from(101), Decimal::from(30)),],
+            snapshot.ask_orders,
+        );
+        assert_eq!(4, snapshot.last_seq_id)
     }
 }
