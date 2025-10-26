@@ -1,0 +1,13 @@
+[package]
+name = "tte"
+version = "0.1.0"
+edition = "2024"
+
+
+[lib]
+name = "trade_engine"
+path = "src/lib.rs"
+
+
+[dependencies]
+rust_decimal ={ version = "1.39" }
