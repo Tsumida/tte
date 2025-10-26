@@ -9,7 +9,7 @@ use crate::common::err_code;
 use crate::common::types::{Direction, Order, OrderID, OrderState, OrderType, SeqID, TimeInForce};
 
 #[derive(Debug, Clone)]
-struct MatchRecord {
+pub(crate) struct MatchRecord {
     seq_id: SeqID,
     prev_seq_id: SeqID,
     price: Decimal,
@@ -19,32 +19,34 @@ struct MatchRecord {
     maker_order_id: OrderID,
     is_taker_fulfilled: bool,
     is_maker_fulfilled: bool,
+    make_state: OrderState, // 对于maker，matchResult中只可能是F\PF; 在ob中，只能是Pending\PF
 }
 
 #[derive(Debug, Clone)]
-struct MatchResult {
+pub(crate) struct MatchResult {
     original_order: Order,
     results: Vec<MatchRecord>,
+    order_state: OrderState,
 }
 
 // 订单簿键
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct OrderBookKey {
+pub(crate) struct OrderBookKey {
     price: Decimal,
     seq_id: SeqID,
 }
 
 #[derive(Debug, Clone)]
-struct MatchState {
-    remain_qty: Decimal, // maker剩余数量
-    filled_qty: Decimal, // taker已成交数量
-    state: OrderState,
+pub(crate) struct MakerOrder {
+    pub(crate) order: Order, // 不可变
+    pub(crate) match_state: MatchState,
+    pub(crate) order_state: OrderState,
 }
 
 #[derive(Debug, Clone)]
-struct MakerOrder {
-    order: Order,            // 不可变
-    match_state: MatchState, // 撮合过程中更新
+pub(crate) struct MatchState {
+    remain_qty: Decimal, // maker剩余数量
+    filled_qty: Decimal, // taker已成交数量
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,12 +69,12 @@ impl PartialOrd for KeyExt<OrderBookKey> {
         match (self, other) {
             (KeyExt::Bid(a), KeyExt::Bid(b)) => {
                 // bid: (price desc, seq_id asc)
-                if b.price > a.price {
+                if a.price > b.price {
                     Some(Ordering::Less)
-                } else if b.price < a.price {
+                } else if a.price < b.price {
                     Some(Ordering::Greater)
                 } else {
-                    Some(a.seq_id.cmp(&b.seq_id))
+                    a.seq_id.partial_cmp(&b.seq_id)
                 }
             }
             (KeyExt::Ask(a), KeyExt::Ask(b)) => {
@@ -82,7 +84,7 @@ impl PartialOrd for KeyExt<OrderBookKey> {
                 } else if a.price > b.price {
                     Some(Ordering::Greater)
                 } else {
-                    Some(a.seq_id.cmp(&b.seq_id))
+                    a.seq_id.partial_cmp(&b.seq_id)
                 }
             }
             _ => None, // 不能交叉对比
@@ -99,7 +101,7 @@ impl Ord for KeyExt<OrderBookKey> {
 // bid: (price desc, seq_id asc)
 // ask: (price asc , seq_id asc)
 
-struct BTreeOrderQueue {
+pub(crate) struct BTreeOrderQueue {
     direction: Direction,
     orders: BTreeMap<KeyExt<OrderBookKey>, MakerOrder>,
 }
@@ -140,7 +142,7 @@ impl BTreeOrderQueue {
 }
 
 // // 卖单队列实现 (价格升序，时间升序)
-struct OrderBook {
+pub(crate) struct OrderBook {
     seq_id: SeqID, // last seqID had ever seen. for dedup & ignore outdated request
     order_id_to_orderbook_key: HashMap<OrderID, OrderBookKey>,
     bid_orders: BTreeOrderQueue,
@@ -158,6 +160,10 @@ impl OrderBook {
     }
 
     fn match_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr> {
+        if order.post_only {
+            return self.post_order(order);
+        }
+
         match (order.order_type, order.time_in_force) {
             (OrderType::Limit, TimeInForce::GTK)
             | (OrderType::Market, TimeInForce::IOC)
@@ -166,11 +172,47 @@ impl OrderBook {
                 match_state: MatchState {
                     remain_qty: Decimal::ZERO, // 作为taker，为0
                     filled_qty: Decimal::ZERO,
-                    state: OrderState::Pending,
                 },
+                order_state: OrderState::Pending,
             }),
             _ => Err(OrderBookErr::new(err_code::ERR_OB_ORDER_TYPE_TIF)), // 未实现其他类型
         }
+    }
+
+    fn post_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr> {
+        // 直接加入订单簿
+        let maker_order = MakerOrder {
+            order: order.clone(),
+            match_state: MatchState {
+                remain_qty: order.target_qty,
+                filled_qty: Decimal::ZERO,
+            },
+            order_state: OrderState::Pending,
+        };
+        let queue = if order.direction == Direction::Buy {
+            &mut self.bid_orders
+        } else {
+            &mut self.ask_orders
+        };
+        queue.add(
+            OrderBookKey {
+                price: order.price,
+                seq_id: order.seq_id,
+            },
+            maker_order,
+        );
+        self.order_id_to_orderbook_key.insert(
+            order.order_id.clone(),
+            OrderBookKey {
+                price: order.price,
+                seq_id: order.seq_id,
+            },
+        );
+        Ok(MatchResult {
+            original_order: order,
+            results: vec![],
+            order_state: OrderState::Pending,
+        })
     }
 
     fn match_basic_order(&mut self, mut taker: MakerOrder) -> Result<MatchResult, OrderBookErr> {
@@ -214,6 +256,11 @@ impl OrderBook {
                     maker_order_id: maker.order.order_id.clone(),
                     is_taker_fulfilled: total_filled_qty + filled_qty >= taker.order.target_qty, // consider over match
                     is_maker_fulfilled: filled_qty >= maker.match_state.remain_qty,
+                    make_state: if filled_qty >= maker.match_state.remain_qty {
+                        OrderState::Filled
+                    } else {
+                        OrderState::PartiallyFilled
+                    },
                 });
 
                 total_filled_qty += filled_qty;
@@ -226,6 +273,11 @@ impl OrderBook {
             }
         }
 
+        if total_filled_qty > taker.order.target_qty {
+            // invalid path
+            return Err(OrderBookErr::new(err_code::ERR_OB_INTERNAL));
+        }
+
         // 更新taker订单状态
         let mut put_taker_in_current_q = false;
         match taker.order.time_in_force {
@@ -234,19 +286,19 @@ impl OrderBook {
                 taker.match_state.filled_qty = total_filled_qty;
                 taker.match_state.remain_qty = taker.order.target_qty - total_filled_qty;
                 if taker.match_state.filled_qty >= taker.order.target_qty {
-                    taker.match_state.state = OrderState::Filled;
+                    taker.order_state = OrderState::Filled;
                 } else if taker.match_state.filled_qty > Decimal::ZERO {
-                    taker.match_state.state = OrderState::PartiallyFilled;
+                    taker.order_state = OrderState::PartiallyFilled;
                     put_taker_in_current_q = true;
                 } else {
-                    taker.match_state.state = OrderState::Pending;
+                    taker.order_state = OrderState::Pending;
                     put_taker_in_current_q = true;
                 }
             }
             TimeInForce::FOK => {
                 // 完全成交或部分成交，剩余部分取消
                 taker.match_state.filled_qty = total_filled_qty;
-                taker.match_state.state = if total_filled_qty >= taker.order.target_qty {
+                taker.order_state = if total_filled_qty >= taker.order.target_qty {
                     OrderState::Filled
                 } else if total_filled_qty > Decimal::ZERO {
                     OrderState::PartiallyFilled
@@ -257,7 +309,7 @@ impl OrderBook {
             TimeInForce::IOC => {
                 // 完全成交或取消
                 taker.match_state.filled_qty = total_filled_qty;
-                taker.match_state.state = if total_filled_qty >= taker.order.target_qty {
+                taker.order_state = if total_filled_qty >= taker.order.target_qty {
                     OrderState::Filled
                 } else {
                     OrderState::Cancelled
@@ -267,6 +319,13 @@ impl OrderBook {
 
         // 更新当前订单队列
         if put_taker_in_current_q {
+            self.order_id_to_orderbook_key.insert(
+                taker.order.order_id.clone(),
+                OrderBookKey {
+                    price: taker.order.price,
+                    seq_id: taker.order.seq_id,
+                },
+            );
             current_q.add(
                 OrderBookKey {
                     price: taker.order.price,
@@ -278,15 +337,16 @@ impl OrderBook {
         // 更新对手方队列
         let n = match_keys.len();
         if n > 0 {
-            let mut order = None;
+            let mut maker = None;
             for _ in 0..n {
-                order = adversary_q.pop_min();
+                maker = adversary_q.pop_min();
             }
             if let Some(record) = results.last() {
                 if !record.is_maker_fulfilled {
-                    let mut order = order.unwrap();
-                    order.1.match_state.remain_qty -= record.qty;
-                    adversary_q.add(order.0, order.1);
+                    let mut maker = maker.unwrap();
+                    maker.1.match_state.remain_qty -= record.qty;
+                    maker.1.order_state = OrderState::PartiallyFilled;
+                    adversary_q.add(maker.0, maker.1);
                 }
             }
         }
@@ -294,12 +354,13 @@ impl OrderBook {
         Ok(MatchResult {
             original_order: taker.order,
             results: results,
+            order_state: taker.order_state,
         })
     }
 }
 
 #[derive(Debug)]
-struct OrderBookErr {
+pub(crate) struct OrderBookErr {
     err_code: i32,
 }
 
@@ -312,5 +373,225 @@ impl OrderBookErr {
 impl std::fmt::Display for OrderBookErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "OrderBookErr:{}", self.err_code)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::common::types::{Direction, Order, OrderID, OrderState, OrderType, TimeInForce};
+    use crate::match_engine::orderbook::{
+        KeyExt, MatchResult, OrderBook, OrderBookErr, OrderBookKey,
+    };
+    use rust_decimal::Decimal;
+    use rust_decimal::prelude::FromPrimitive;
+
+    fn post_limit_order(ob: &mut OrderBook, direction: Direction, price: f64, qty: f64) {
+        let order = Order {
+            client_origin_id: String::new(),
+            post_only: true, // essential
+            order_id: OrderID::new(),
+            seq_id: ob.seq_id + 1,
+            prev_seq_id: ob.seq_id,
+            direction: direction,
+            order_type: OrderType::Limit,
+            time_in_force: TimeInForce::GTK,
+            price: Decimal::from_f64(price).unwrap(),
+            target_qty: Decimal::from_f64(qty).unwrap(),
+        };
+        _ = ob.match_order(order)
+    }
+
+    fn add_limit_order(
+        ob: &mut OrderBook,
+        direction: Direction,
+        price: f64,
+        qty: f64,
+    ) -> Result<MatchResult, OrderBookErr> {
+        let order = Order {
+            client_origin_id: String::new(),
+            post_only: false,
+            order_id: OrderID::new(),
+            seq_id: ob.seq_id + 1,
+            prev_seq_id: ob.seq_id,
+            direction: direction,
+            order_type: OrderType::Limit,
+            time_in_force: TimeInForce::GTK,
+            price: Decimal::from_f64(price).unwrap(),
+            target_qty: Decimal::from_f64(qty).unwrap(),
+        };
+        ob.match_order(order)
+    }
+
+    #[test]
+    fn test_key_ext() {
+        let k1 = KeyExt::Bid(OrderBookKey {
+            price: Decimal::from_f64(101.0).unwrap(),
+            seq_id: 1,
+        });
+        let k2 = KeyExt::Bid(OrderBookKey {
+            price: Decimal::from_f64(100.0).unwrap(),
+            seq_id: 2,
+        });
+        assert!(k1 < k2);
+
+        let k3 = KeyExt::Ask(OrderBookKey {
+            price: Decimal::from_f64(100.0).unwrap(),
+            seq_id: 1,
+        });
+        let k4 = KeyExt::Ask(OrderBookKey {
+            price: Decimal::from_f64(101.0).unwrap(),
+            seq_id: 2,
+        });
+        assert!(k3 < k4);
+    }
+
+    #[test]
+    fn test_limit_buy_order_filled() {
+        let mut ob = OrderBook::new();
+        // ask_q: (100.0, 10.0), (101.0, 5.0), (102.0, 20.0)
+        // bid: (102, 30.0)
+        // match: (100.0,10.0), (101.0,5.0), (102.0,15.0)
+        // ask_q_new: (102.0, 5.0)
+        post_limit_order(&mut ob, Direction::Sell, 100.0, 10.0);
+        post_limit_order(&mut ob, Direction::Sell, 101.0, 5.0);
+        post_limit_order(&mut ob, Direction::Sell, 102.0, 20.0);
+        let result = add_limit_order(&mut ob, Direction::Buy, 102.0, 30.0).unwrap();
+        assert_eq!(result.results.len(), 3);
+        assert_eq!(result.results[0].price, Decimal::from_f64(100.0).unwrap());
+        assert_eq!(result.results[0].qty, Decimal::from_f64(10.0).unwrap());
+        assert_eq!(result.results[1].price, Decimal::from_f64(101.0).unwrap());
+        assert_eq!(result.results[1].qty, Decimal::from_f64(5.0).unwrap());
+        assert_eq!(result.results[2].price, Decimal::from_f64(102.0).unwrap());
+        assert_eq!(result.results[2].qty, Decimal::from_f64(15.0).unwrap());
+
+        let (_, peek) = ob.ask_orders.peek().unwrap();
+        assert_eq!(peek.order.price, Decimal::from_f64(102.0).unwrap());
+        assert_eq!(peek.match_state.remain_qty, Decimal::from_f64(5.0).unwrap());
+
+        assert_eq!(result.order_state, OrderState::Filled);
+    }
+
+    #[test]
+    fn test_limit_buy_order_partially_filled() {
+        let mut ob = OrderBook::new();
+        // ask_q: (100.0, 10.0), (101.0, 5.0), (102.0, 20.0)
+        // bid: (101, 30.0)
+        // match: (100.0,10.0), (101.0,5.0)
+        // ask_q_new: (102.0, 5.0)
+        // bid_q_new: (102.0,15.0)
+        post_limit_order(&mut ob, Direction::Sell, 100.0, 10.0);
+        post_limit_order(&mut ob, Direction::Sell, 101.0, 5.0);
+        post_limit_order(&mut ob, Direction::Sell, 102.0, 20.0);
+        let result = add_limit_order(&mut ob, Direction::Buy, 101.0, 30.0).unwrap();
+        assert_eq!(result.results.len(), 2);
+        assert_eq!(result.results[0].price, Decimal::from_f64(100.0).unwrap());
+        assert_eq!(result.results[0].qty, Decimal::from_f64(10.0).unwrap());
+        assert_eq!(result.results[1].price, Decimal::from_f64(101.0).unwrap());
+        assert_eq!(result.results[1].qty, Decimal::from_f64(5.0).unwrap());
+
+        let (_, ask_peek) = ob.ask_orders.peek().unwrap();
+        assert_eq!(ask_peek.order.price, Decimal::from_f64(102.0).unwrap());
+        assert_eq!(
+            ask_peek.match_state.remain_qty,
+            Decimal::from_f64(20.0).unwrap()
+        );
+
+        let (_, bid_peek) = ob.bid_orders.peek().unwrap();
+        assert_eq!(bid_peek.order.price, Decimal::from_f64(101.0).unwrap());
+        assert_eq!(
+            bid_peek.match_state.filled_qty,
+            Decimal::from_f64(15.0).unwrap(),
+        );
+        assert_eq!(
+            bid_peek.match_state.remain_qty,
+            Decimal::from_f64(15.0).unwrap(),
+        );
+        assert_eq!(bid_peek.order_state, OrderState::PartiallyFilled);
+    }
+
+    #[test]
+    fn test_limit_sell_order_filled() {
+        let mut ob = OrderBook::new();
+        // bid_q: (102.0, 10.0), (101.0, 5.0), (100.0, 20.0)
+        // ask: (100, 30.0)
+        // match:(102.0,10.0), (101.0,5.0), (100.0,15.0)
+        // bid_q_new: (100.0, 5.0)
+        post_limit_order(&mut ob, Direction::Buy, 102.0, 10.0);
+        post_limit_order(&mut ob, Direction::Buy, 101.0, 5.0);
+        post_limit_order(&mut ob, Direction::Buy, 100.0, 20.0);
+        let result = add_limit_order(&mut ob, Direction::Sell, 100.0, 30.0).unwrap();
+        assert_eq!(result.results.len(), 3);
+        assert_eq!(result.results[0].price, Decimal::from_f64(102.0).unwrap());
+        assert_eq!(result.results[0].qty, Decimal::from_f64(10.0).unwrap());
+        assert_eq!(result.results[1].price, Decimal::from_f64(101.0).unwrap());
+        assert_eq!(result.results[1].qty, Decimal::from_f64(5.0).unwrap());
+        assert_eq!(result.results[2].price, Decimal::from_f64(100.0).unwrap());
+        assert_eq!(result.results[2].qty, Decimal::from_f64(15.0).unwrap());
+
+        let (_, peek) = ob.bid_orders.peek().unwrap();
+        assert_eq!(peek.order.price, Decimal::from_f64(100.0).unwrap());
+        assert_eq!(peek.match_state.remain_qty, Decimal::from_f64(5.0).unwrap());
+    }
+
+    #[test]
+    fn test_limit_sell_order_partially_filled() {
+        let mut ob = OrderBook::new();
+        // bid_q: (102.0, 10.0), (101.0, 5.0), (100.0, 20.0)
+        // ask: (101, 30.0)
+        // match:(102.0,10.0), (101.0,5.0)
+        // bid_q_new: (100.0,20.0)
+        // ask_q_new: (101.0,15.0)
+
+        post_limit_order(&mut ob, Direction::Buy, 102.0, 10.0);
+        post_limit_order(&mut ob, Direction::Buy, 101.0, 5.0);
+        post_limit_order(&mut ob, Direction::Buy, 100.0, 20.0);
+        let result = add_limit_order(&mut ob, Direction::Sell, 101.0, 30.0).unwrap();
+        assert_eq!(result.results.len(), 2);
+        assert_eq!(result.results[0].price, Decimal::from_f64(102.0).unwrap());
+        assert_eq!(result.results[0].qty, Decimal::from_f64(10.0).unwrap());
+        assert_eq!(result.results[1].price, Decimal::from_f64(101.0).unwrap());
+        assert_eq!(result.results[1].qty, Decimal::from_f64(5.0).unwrap());
+
+        let (_, bid_peek) = ob.bid_orders.peek().unwrap();
+        assert_eq!(bid_peek.order.price, Decimal::from_f64(100.0).unwrap());
+        assert_eq!(
+            bid_peek.match_state.remain_qty,
+            Decimal::from_f64(20.0).unwrap()
+        );
+        // PS: 也就是一次都没有成交过; 只要有一次成交即是PartiallyFilled
+        assert_eq!(bid_peek.order_state, OrderState::Pending);
+
+        let (_, ask_peek) = ob.ask_orders.peek().unwrap();
+        assert_eq!(ask_peek.order.price, Decimal::from_f64(101.0).unwrap());
+        assert_eq!(
+            ask_peek.match_state.remain_qty,
+            Decimal::from_f64(15.0).unwrap()
+        );
+        assert_eq!(ask_peek.order_state, OrderState::PartiallyFilled);
+
+        // bid_q: (100.0, 20.0)
+        // ask_q: (101.0,15.0)
+        // ask: (100, 2.0)
+        // match:(100, 5.0)
+        // bid_q_new: (100.0, 18.0)
+        // ask_q_new: (101.0,15.0)
+        let result2 = add_limit_order(&mut ob, Direction::Sell, 100.0, 2.0).unwrap();
+        assert_eq!(result2.results.len(), 1);
+        assert_eq!(result2.results[0].price, Decimal::from_f64(100.0).unwrap());
+        assert_eq!(result2.results[0].qty, Decimal::from_f64(2.0).unwrap());
+        let (_, bid_peek2) = ob.bid_orders.peek().unwrap();
+        assert_eq!(bid_peek2.order.price, Decimal::from_f64(100.0).unwrap());
+        assert_eq!(
+            bid_peek2.match_state.remain_qty,
+            Decimal::from_f64(18.0).unwrap(),
+        );
+        assert_eq!(bid_peek2.order_state, OrderState::PartiallyFilled);
+
+        let (_, ask_peek2) = ob.ask_orders.peek().unwrap();
+        assert_eq!(ask_peek2.order.price, Decimal::from_f64(101.0).unwrap());
+        assert_eq!(
+            ask_peek2.match_state.remain_qty,
+            Decimal::from_f64(15.0).unwrap(),
+        );
     }
 }

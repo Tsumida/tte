@@ -1,7 +1,7 @@
 use rust_decimal::Decimal;
 
 pub type OrderID = String;
-pub type ClientOriginID = u64;
+pub type ClientOriginID = String;
 pub type SeqID = u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,19 +51,6 @@ impl Order {
     fn order_id(&self) -> &OrderID {
         &self.order_id
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MakerOrder {
-    pub(crate) order: Order, // 不可变
-    pub(crate) match_state: MatchState,
-    pub(crate) state: OrderState,
-}
-
-#[derive(Debug, Clone)]
-pub struct MatchState {
-    pub(crate) filled_qty: Decimal, // taker已成交数量, 只在作为taker时更新
-    pub(crate) remain_qty: Decimal, // maker剩余待成交数量, 只在作为maker时更新
 }
 
 // 撮合结果结构体
