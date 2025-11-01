@@ -55,14 +55,14 @@ impl Order {
 
 // 撮合结果结构体
 #[derive(Debug, Clone)]
-pub struct MatchRecord {
-    pub(crate) seq_id: SeqID,
-    pub(crate) prev_seq_id: SeqID,
-    pub(crate) price: Decimal,
-    pub(crate) qty: Decimal,
-    pub(crate) direction: Direction,
-    pub(crate) taker_order_id: OrderID,
-    pub(crate) maker_order_id: OrderID,
-    pub(crate) is_taker_fulfilled: bool,
-    pub(crate) is_maker_fulfilled: bool,
+pub(crate) struct MatchRecord {
+    seq_id: SeqID,
+    prev_seq_id: SeqID,
+    price: Decimal,
+    qty: Decimal,
+    direction: Direction,
+    taker_order_id: OrderID,
+    maker_order_id: OrderID,
+    is_taker_fulfilled: bool,
+    is_maker_fulfilled: bool,
 }

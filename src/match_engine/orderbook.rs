@@ -37,6 +37,12 @@ pub(crate) struct OrderBookKey {
     seq_id: SeqID,
 }
 
+impl OrderBookKey {
+    fn new(price: Decimal, seq_id: SeqID) -> Self {
+        return Self { price, seq_id };
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct MakerOrder {
     pub(crate) order: Order, // 不可变
@@ -162,20 +168,61 @@ impl BTreeOrderQueue {
 
         agg
     }
+
+    fn take_queue_snapshot(&self) -> Vec<MakerOrder> {
+        self.orders.iter().map(|(_, maker)| maker.clone()).collect()
+    }
 }
 
-pub struct OrderbookSnapshot {
+impl From<Vec<MakerOrder>> for BTreeOrderQueue {
+    fn from(value: Vec<MakerOrder>) -> BTreeOrderQueue {
+        // 从序列构建BtreeMap
+        let direction = value.first().unwrap().order.direction;
+        let mut btree = BTreeMap::new();
+        for v in value {
+            btree.insert(
+                KeyExt::new(
+                    direction,
+                    OrderBookKey {
+                        price: v.order.price,
+                        seq_id: v.order.seq_id,
+                    },
+                ),
+                v,
+            );
+        }
+        BTreeOrderQueue {
+            direction: direction,
+            orders: btree,
+        }
+    }
+}
+
+pub struct OrderBookLevelSnapshot {
     pub depth: usize,
     pub bid_orders: Vec<(Decimal, Decimal)>,
     pub ask_orders: Vec<(Decimal, Decimal)>,
     pub last_seq_id: u64,
 }
 
-pub trait OrderBookSnapshotHandler {
-    fn take_snapshot(&self, depth: usize) -> Result<OrderbookSnapshot, OrderBookErr>;
+pub struct OrderBookSnapshot {
+    bid_orders: Vec<MakerOrder>,
+    ask_orders: Vec<MakerOrder>,
+    last_seq_id: u64,
 }
 
-pub trait OrderBookRequestHandler {
+pub(crate) trait OrderBookSnapshotHandler {
+    fn take_snapshot_with_depth(
+        &self,
+        depth: usize,
+    ) -> Result<OrderBookLevelSnapshot, OrderBookErr>;
+
+    fn take_snapshot(&self) -> Result<OrderBookSnapshot, OrderBookErr>;
+
+    fn from_snapshot(s: OrderBookSnapshot) -> Result<OrderBook, OrderBookErr>;
+}
+
+pub(crate) trait OrderBookRequestHandler {
     fn place_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr>;
 }
 
@@ -237,7 +284,11 @@ impl OrderBook {
         })
     }
 
-    fn match_basic_order(&mut self, mut taker: MakerOrder) -> Result<MatchResult, OrderBookErr> {
+    // 按指定数量去撮合订单
+    fn match_basic_order_by_qty(
+        &mut self,
+        mut taker: MakerOrder,
+    ) -> Result<MatchResult, OrderBookErr> {
         let mut total_filled_qty = Decimal::ZERO;
         let size_hint = 8;
         let mut results = Vec::with_capacity(size_hint);
@@ -395,7 +446,7 @@ impl OrderBookRequestHandler for OrderBook {
         match (order.order_type, order.time_in_force) {
             (OrderType::Limit, TimeInForce::GTK)
             | (OrderType::Market, TimeInForce::IOC)
-            | (OrderType::Market, TimeInForce::FOK) => self.match_basic_order(MakerOrder {
+            | (OrderType::Market, TimeInForce::FOK) => self.match_basic_order_by_qty(MakerOrder {
                 order: order,
                 match_state: MatchState {
                     remain_qty: Decimal::ZERO, // 作为taker，为0
@@ -409,15 +460,53 @@ impl OrderBookRequestHandler for OrderBook {
 }
 
 impl OrderBookSnapshotHandler for OrderBook {
-    fn take_snapshot(&self, depth: usize) -> Result<OrderbookSnapshot, OrderBookErr> {
+    fn take_snapshot_with_depth(
+        &self,
+        depth: usize,
+    ) -> Result<OrderBookLevelSnapshot, OrderBookErr> {
         let bid_orders = self.bid_orders.get_aggregated_qty(depth);
         let ask_orders = self.ask_orders.get_aggregated_qty(depth);
 
-        Ok(OrderbookSnapshot {
+        Ok(OrderBookLevelSnapshot {
             depth,
             bid_orders,
             ask_orders,
             last_seq_id: self.seq_id,
+        })
+    }
+
+    fn take_snapshot(&self) -> Result<OrderBookSnapshot, OrderBookErr> {
+        Ok(OrderBookSnapshot {
+            bid_orders: self.bid_orders.take_queue_snapshot(),
+            ask_orders: self.ask_orders.take_queue_snapshot(),
+            last_seq_id: self.seq_id,
+        })
+    }
+
+    fn from_snapshot(s: OrderBookSnapshot) -> Result<OrderBook, OrderBookErr> {
+        let n = s.ask_orders.len() + s.bid_orders.len();
+        let mut order_id_to_key = HashMap::with_capacity(2 * n);
+        for v in s.bid_orders.iter() {
+            order_id_to_key.insert(
+                v.order.order_id.clone(),
+                OrderBookKey::new(v.order.price, v.order.seq_id),
+            );
+        }
+        for v in s.ask_orders.iter() {
+            order_id_to_key.insert(
+                v.order.order_id.clone(),
+                OrderBookKey::new(v.order.price, v.order.seq_id),
+            );
+        }
+
+        let bid_orders = BTreeOrderQueue::from(s.bid_orders);
+        let ask_orders = BTreeOrderQueue::from(s.ask_orders);
+
+        Ok(OrderBook {
+            seq_id: s.last_seq_id,
+            order_id_to_orderbook_key: order_id_to_key,
+            bid_orders,
+            ask_orders,
         })
     }
 }
@@ -666,7 +755,7 @@ mod test {
         post_limit_order(&mut ob, Direction::Buy, 100.0, 20.0);
         post_limit_order(&mut ob, Direction::Sell, 101.0, 30.0);
 
-        let snapshot = ob.take_snapshot(2).unwrap();
+        let snapshot = ob.take_snapshot_with_depth(2).unwrap();
         assert_eq!(
             vec![
                 (Decimal::from(102), Decimal::from(10)),
