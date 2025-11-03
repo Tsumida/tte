@@ -1,0 +1,194 @@
+
+syntax = "proto3";
+
+package oms;
+
+import "google/protobuf/empty.proto";
+
+// generate OrderState, direction, tif, order_type
+enum OrderState{
+    UndefinedOrderState = 0;
+    New = 1;             
+    Rejected = 2;        
+    PendingNew = 3;      
+    PartiallyFilled = 4; 
+    Filled = 5;          
+    Cancelled = 6;       
+}
+
+enum Direction{
+    UndefinedDirection = 0;
+    Buy = 1;
+    Sell = 2;
+}
+
+enum TimeInForce{
+    UndefinedTIF = 0;
+    GTK = 1;
+    FOK = 2;
+    IOC = 3;
+}
+
+enum OrderType{
+    UndefinedOrderType = 0;
+    Limit = 1;  
+    Market = 2;
+}
+
+enum SpotChangeReason{
+    UndefinedSpotChangeReason = 0;
+    Deposit = 1;
+    Withdraw = 2;
+    Transfer = 3;   // 账户间划转
+    PlaceOrder = 4;
+    CancelOrder = 5;
+    FillOrder = 6;
+}
+
+message Order{
+    string order_id = 1; 
+    string symbol = 2; 
+    int32 direction = 3;        // 对应Direction枚举
+    int32 time_in_force = 4;    // 对应TimeInForce枚举
+    int32 order_type = 5;   // 对应OrderType枚举
+    string price = 6;
+    string quantity = 7;
+    string create_time = 8; // us
+    string client_order_id = 9; // 可选
+}
+
+message OrderDetail{
+    Order original = 1;
+    string current_state = 2; // 对应OrderState枚举
+    string filled_quantity = 3;
+    uint64 last_seq_id = 4;
+    uint64 update_time = 5; // us
+}
+
+// 撮合结果
+message MatchRecord{
+    uint64 seq_id = 1;
+    uint64 prev_seq_id = 2;
+    string price = 3;
+    string quantity = 4;
+    int32 direction = 5;    // 对应Direction枚举
+    string taker_order_id = 6;
+    string maker_order_id = 7;
+    bool is_taker_fulfilled = 8;
+    bool is_maker_fulfilled = 9;
+}
+
+message MatchResult{
+    Order order = 1;
+    repeated MatchRecord records = 2;
+}
+
+enum SymbolState{
+    UndefinedSymbolState = 0;
+    SymbolTrading = 1;    // 正常交易
+    SymbolSuspended = 2;  // 不可交易，但可以撤单
+    SymbolNew = 3;        // 新上线，暂不可交易
+}
+
+// ======================================== 配置类
+message SymbolConfig{
+    string symbol = 1;
+    string min_price_increment = 2;
+    string min_quantity_increment = 3;
+    int32 state = 4; // 对应SymbolState枚举
+}
+
+// ======================================= 行情类
+message LevelSnapshot{
+    string symbol = 1; 
+    repeated Order bids = 2; 
+    repeated Order asks = 3; 
+}
+
+// ======================================== 指令类
+message ReplaceOrderCmd{
+    string order_id = 1; 
+    string new_price = 2;
+    string new_quantity = 3;
+    uint64 account_id = 4;
+}
+
+// Generate PlaceOrder, ReplaceOrder, CancelOrder, TakeSnapshot
+
+// ======================================== RPC类
+message PlaceOrderReq{
+    uint64 seq_id = 1; 
+    uint64 prev_seq_id = 2;
+    Order order = 3;
+    uint64 account_id = 4;
+}
+
+message PlaceOrderRsp{
+}
+
+message ReplaceOrderReq{    
+    uint64 seq_id = 1; 
+    uint64 prev_seq_id = 2;
+    ReplaceOrderCmd cmd = 3;
+}
+
+message ReplaceOrderRsp{
+}
+
+message CancelOrderReq{
+    uint64 seq_id = 1; 
+    uint64 prev_seq_id = 2;
+    string order_id = 3;
+    uint64 account_id = 4;
+}
+
+message CancelOrderRsp{
+}
+
+message TakeSnapshotReq{
+}
+
+message TakeSnapshotRsp{
+}
+
+message GetOrderDetailReq{
+    string order_id = 1;
+    string client_order_id = 2; 
+}
+
+// ======================================== 账户类
+message GetBalanceReq{
+    uint64 account_id = 1;
+}
+
+message GetBalanceRsp{
+    string available_cash = 1;
+    string total_cash = 2;
+    string margin_used = 3;
+}
+
+
+// ================================ 业务类
+service OMSService {
+    rpc PlaceOrder(PlaceOrderReq) returns (PlaceOrderRsp);
+
+    rpc ReplaceOrder(ReplaceOrderReq) returns (ReplaceOrderRsp);
+
+    rpc CancelOrder(CancelOrderReq) returns (CancelOrderRsp);
+}
+
+service OrderQueryService {
+    // 优先按order_id查询，其次按client_order_id查询
+    rpc GetOrderDetail(GetOrderDetailReq) returns (OrderDetail);
+}
+
+service AccountQueryService {
+    rpc GetBalance(GetBalanceReq) returns (GetBalanceRsp);
+    // rpc GetEODBalance(GetEODBalanceReq) returns (GetEODBalanceRsp);
+}
+
+service OMSControlService {
+    rpc TakeSnapshot(TakeSnapshotReq) returns (TakeSnapshotRsp);
+
+    rpc UpdateSymbolConfig(SymbolConfig) returns (google.protobuf.Empty);
+}

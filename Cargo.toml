@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 
+# 启用构建脚本
+build = "src/build/build.rs"
+
+
 [lib]
 name = "trade_engine"
 path = "src/lib.rs"
@@ -14,3 +18,7 @@ rust_decimal ={ version = "1.39" }
 tonic = "0.9"
 prost = "0.11"
 tokio = { version = "1", features = ["full"] }
+
+
+[build-dependencies]
+tonic-build = { version = "0.9"}

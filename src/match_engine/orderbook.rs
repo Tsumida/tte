@@ -1,3 +1,4 @@
+use core::panic;
 use std::cmp::{Ordering, max};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -28,6 +29,7 @@ pub(crate) struct MatchResult {
     original_order: Order,
     results: Vec<MatchRecord>,
     order_state: OrderState,
+    total_filled_qty: Decimal,
 }
 
 // 订单簿键
@@ -94,7 +96,7 @@ impl PartialOrd for KeyExt<OrderBookKey> {
                     a.seq_id.partial_cmp(&b.seq_id)
                 }
             }
-            _ => None, // 不能交叉对比
+            _ => panic!("invalid comparation"), // 不能交叉对比
         }
     }
 }
@@ -256,7 +258,7 @@ impl OrderBook {
                 remain_qty: order.target_qty,
                 filled_qty: Decimal::ZERO,
             },
-            order_state: OrderState::Pending,
+            order_state: OrderState::New,
         };
         let queue = if order.direction == Direction::Buy {
             &mut self.bid_orders
@@ -280,7 +282,8 @@ impl OrderBook {
         Ok(MatchResult {
             original_order: order,
             results: vec![],
-            order_state: OrderState::Pending,
+            order_state: OrderState::New,
+            total_filled_qty: Decimal::ZERO,
         })
     }
 
@@ -364,7 +367,7 @@ impl OrderBook {
                     taker.order_state = OrderState::PartiallyFilled;
                     put_taker_in_current_q = true;
                 } else {
-                    taker.order_state = OrderState::Pending;
+                    taker.order_state = OrderState::New;
                     put_taker_in_current_q = true;
                 }
             }
@@ -428,6 +431,7 @@ impl OrderBook {
             original_order: taker.order,
             results: results,
             order_state: taker.order_state,
+            total_filled_qty: total_filled_qty,
         })
     }
 }
@@ -452,7 +456,7 @@ impl OrderBookRequestHandler for OrderBook {
                     remain_qty: Decimal::ZERO, // 作为taker，为0
                     filled_qty: Decimal::ZERO,
                 },
-                order_state: OrderState::Pending,
+                order_state: OrderState::New,
             }),
             _ => Err(OrderBookErr::new(err_code::ERR_OB_ORDER_TYPE_TIF)), // 未实现其他类型
         }
@@ -711,7 +715,7 @@ mod test {
             Decimal::from_f64(20.0).unwrap()
         );
         // PS: 也就是一次都没有成交过; 只要有一次成交即是PartiallyFilled
-        assert_eq!(bid_peek.order_state, OrderState::Pending);
+        assert_eq!(bid_peek.order_state, OrderState::New);
 
         let (_, ask_peek) = ob.ask_orders.peek().unwrap();
         assert_eq!(ask_peek.order.price, Decimal::from_f64(101.0).unwrap());

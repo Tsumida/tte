@@ -1,8 +1,12 @@
+use std::collections::HashMap;
+
 use rust_decimal::Decimal;
 
+pub type Symbol = String; // BTCUSD
 pub type OrderID = String;
 pub type ClientOriginID = String;
 pub type SeqID = u64;
+pub type Currency = String; // USD, BTC, ETH
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -26,10 +30,12 @@ pub enum OrderType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderState {
-    Pending,
-    PartiallyFilled,
-    Filled,
-    Cancelled,
+    New,             // The order is created
+    Rejected,        // The order is rejected due to invaild parameter, balance insufficient, etc.
+    PendingNew,      // The order is valid and waiting for further processing.
+    PartiallyFilled, // The order is partially done.
+    Filled,          // The order is completely done.
+    Cancelled,       // The order is cancelled by user.
 }
 
 // 订单结构体
@@ -53,16 +59,25 @@ impl Order {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct OrderDetail {
+    original: Order,
+    current_state: OrderState,
+    filled_qty: Decimal,
+    last_seq_id: SeqID,
+}
+
 // 撮合结果结构体
 #[derive(Debug, Clone)]
 pub(crate) struct MatchRecord {
-    seq_id: SeqID,
-    prev_seq_id: SeqID,
-    price: Decimal,
-    qty: Decimal,
-    direction: Direction,
-    taker_order_id: OrderID,
-    maker_order_id: OrderID,
-    is_taker_fulfilled: bool,
-    is_maker_fulfilled: bool,
+    pub seq_id: SeqID,
+    pub prev_seq_id: SeqID,
+    pub price: Decimal,
+    pub qty: Decimal,
+    pub direction: Direction,
+    pub taker_order_id: OrderID,
+    pub maker_order_id: OrderID,
+    pub is_taker_fulfilled: bool,
+    pub is_maker_fulfilled: bool,
+    pub symbol: Symbol,
 }
