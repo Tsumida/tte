@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use core::panic;
 use std::cmp::{Ordering, max};
 use std::collections::HashMap;
@@ -5,32 +7,13 @@ use std::hash::Hash;
 use std::{cmp::min, collections::BTreeMap};
 
 use rust_decimal::Decimal;
-use rust_decimal::prelude::Zero;
 
 use crate::common::err_code;
-use crate::common::types::{Direction, Order, OrderID, OrderState, OrderType, SeqID, TimeInForce};
-
-#[derive(Debug, Clone)]
-pub(crate) struct MatchRecord {
-    seq_id: SeqID,
-    prev_seq_id: SeqID,
-    price: Decimal,
-    qty: Decimal,
-    direction: Direction,
-    taker_order_id: OrderID,
-    maker_order_id: OrderID,
-    is_taker_fulfilled: bool,
-    is_maker_fulfilled: bool,
-    maker_state: OrderState, // 对于maker，matchResult中只可能是F\PF; 在ob中，只能是Pending\PF
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MatchResult {
-    original_order: Order,
-    results: Vec<MatchRecord>,
-    order_state: OrderState,
-    total_filled_qty: Decimal,
-}
+use crate::common::types::{
+    Direction, FillOrderResult, MatchRecord, MatchResult, Order, OrderID, OrderState, OrderType,
+    SeqID, TimeInForce,
+};
+use crate::pbcode::oms::BizAction;
 
 // 订单簿键
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -280,10 +263,16 @@ impl OrderBook {
             },
         );
         Ok(MatchResult {
-            original_order: order,
-            results: vec![],
-            order_state: OrderState::New,
-            total_filled_qty: Decimal::ZERO,
+            action: BizAction::FillOrder,
+            fill_result: Some(FillOrderResult {
+                symbol: order.symbol.clone(),
+                original_order: order,
+                results: vec![],
+                order_state: OrderState::New,
+                total_filled_qty: Decimal::ZERO,
+            }),
+            replace_result: None,
+            cancel_result: None,
         })
     }
 
@@ -337,6 +326,14 @@ impl OrderBook {
                     } else {
                         OrderState::PartiallyFilled
                     },
+                    taker_account_id: taker.order.account_id,
+                    taker_state: if total_filled_qty + filled_qty >= taker.order.target_qty {
+                        OrderState::Filled
+                    } else {
+                        OrderState::PartiallyFilled
+                    },
+                    maker_account_id: maker.order.account_id,
+                    symbol: taker.order.symbol.clone(),
                 });
 
                 total_filled_qty += filled_qty;
@@ -428,10 +425,16 @@ impl OrderBook {
         }
 
         Ok(MatchResult {
-            original_order: taker.order,
-            results: results,
-            order_state: taker.order_state,
-            total_filled_qty: total_filled_qty,
+            action: BizAction::FillOrder,
+            fill_result: Some(FillOrderResult {
+                symbol: taker.order.symbol.clone(),
+                original_order: taker.order,
+                results,
+                order_state: taker.order_state,
+                total_filled_qty,
+            }),
+            replace_result: None,
+            cancel_result: None,
         })
     }
 }
@@ -533,7 +536,9 @@ impl std::fmt::Display for OrderBookErr {
 
 #[cfg(test)]
 mod test {
-    use crate::common::types::{Direction, Order, OrderID, OrderState, OrderType, TimeInForce};
+    use crate::common::types::{
+        Direction, Order, OrderID, OrderState, OrderType, Symbol, TimeInForce,
+    };
     use crate::match_engine::orderbook::{
         KeyExt, MatchResult, OrderBook, OrderBookErr, OrderBookKey, OrderBookRequestHandler,
         OrderBookSnapshotHandler,
@@ -541,10 +546,17 @@ mod test {
     use rust_decimal::Decimal;
     use rust_decimal::prelude::FromPrimitive;
 
-    fn post_limit_order(ob: &mut OrderBook, direction: Direction, price: f64, qty: f64) {
+    fn post_limit_order(
+        ob: &mut OrderBook,
+        account_id: u64,
+        direction: Direction,
+        price: f64,
+        qty: f64,
+    ) {
         let order = Order {
             client_origin_id: String::new(),
             post_only: true, // essential
+            account_id: account_id,
             order_id: OrderID::new(),
             seq_id: ob.seq_id + 1,
             prev_seq_id: ob.seq_id,
@@ -553,12 +565,17 @@ mod test {
             time_in_force: TimeInForce::GTK,
             price: Decimal::from_f64(price).unwrap(),
             target_qty: Decimal::from_f64(qty).unwrap(),
+            symbol: Symbol {
+                base: "BTC".to_string(),
+                quote: "USD".to_string(),
+            },
         };
         _ = ob.place_order(order)
     }
 
     fn add_limit_order(
         ob: &mut OrderBook,
+        account_id: u64,
         direction: Direction,
         price: f64,
         qty: f64,
@@ -567,6 +584,7 @@ mod test {
             client_origin_id: String::new(),
             post_only: false,
             order_id: OrderID::new(),
+            account_id: account_id,
             seq_id: ob.seq_id + 1,
             prev_seq_id: ob.seq_id,
             direction: direction,
@@ -574,6 +592,10 @@ mod test {
             time_in_force: TimeInForce::GTK,
             price: Decimal::from_f64(price).unwrap(),
             target_qty: Decimal::from_f64(qty).unwrap(),
+            symbol: Symbol {
+                base: "BTC".to_string(),
+                quote: "USD".to_string(),
+            },
         };
         ob.place_order(order)
     }
@@ -608,10 +630,13 @@ mod test {
         // bid: (102, 30.0)
         // match: (100.0,10.0), (101.0,5.0), (102.0,15.0)
         // ask_q_new: (102.0, 5.0)
-        post_limit_order(&mut ob, Direction::Sell, 100.0, 10.0);
-        post_limit_order(&mut ob, Direction::Sell, 101.0, 5.0);
-        post_limit_order(&mut ob, Direction::Sell, 102.0, 20.0);
-        let result = add_limit_order(&mut ob, Direction::Buy, 102.0, 30.0).unwrap();
+        post_limit_order(&mut ob, 1001, Direction::Sell, 100.0, 10.0);
+        post_limit_order(&mut ob, 1002, Direction::Sell, 101.0, 5.0);
+        post_limit_order(&mut ob, 1003, Direction::Sell, 102.0, 20.0);
+        let result = add_limit_order(&mut ob, 1004, Direction::Buy, 102.0, 30.0)
+            .unwrap()
+            .fill_result
+            .unwrap();
         assert_eq!(result.results.len(), 3);
         assert_eq!(result.results[0].price, Decimal::from_f64(100.0).unwrap());
         assert_eq!(result.results[0].qty, Decimal::from_f64(10.0).unwrap());
@@ -635,10 +660,13 @@ mod test {
         // match: (100.0,10.0), (101.0,5.0)
         // ask_q_new: (102.0, 5.0)
         // bid_q_new: (102.0,15.0)
-        post_limit_order(&mut ob, Direction::Sell, 100.0, 10.0);
-        post_limit_order(&mut ob, Direction::Sell, 101.0, 5.0);
-        post_limit_order(&mut ob, Direction::Sell, 102.0, 20.0);
-        let result = add_limit_order(&mut ob, Direction::Buy, 101.0, 30.0).unwrap();
+        post_limit_order(&mut ob, 1001, Direction::Sell, 100.0, 10.0);
+        post_limit_order(&mut ob, 1002, Direction::Sell, 101.0, 5.0);
+        post_limit_order(&mut ob, 1003, Direction::Sell, 102.0, 20.0);
+        let result = add_limit_order(&mut ob, 1004, Direction::Buy, 101.0, 30.0)
+            .unwrap()
+            .fill_result
+            .unwrap();
         assert_eq!(result.results.len(), 2);
         assert_eq!(result.results[0].price, Decimal::from_f64(100.0).unwrap());
         assert_eq!(result.results[0].qty, Decimal::from_f64(10.0).unwrap());
@@ -672,10 +700,13 @@ mod test {
         // ask: (100, 30.0)
         // match:(102.0,10.0), (101.0,5.0), (100.0,15.0)
         // bid_q_new: (100.0, 5.0)
-        post_limit_order(&mut ob, Direction::Buy, 102.0, 10.0);
-        post_limit_order(&mut ob, Direction::Buy, 101.0, 5.0);
-        post_limit_order(&mut ob, Direction::Buy, 100.0, 20.0);
-        let result = add_limit_order(&mut ob, Direction::Sell, 100.0, 30.0).unwrap();
+        post_limit_order(&mut ob, 1001, Direction::Buy, 102.0, 10.0);
+        post_limit_order(&mut ob, 1002, Direction::Buy, 101.0, 5.0);
+        post_limit_order(&mut ob, 1003, Direction::Buy, 100.0, 20.0);
+        let result = add_limit_order(&mut ob, 1004, Direction::Sell, 100.0, 30.0)
+            .unwrap()
+            .fill_result
+            .unwrap();
         assert_eq!(result.results.len(), 3);
         assert_eq!(result.results[0].price, Decimal::from_f64(102.0).unwrap());
         assert_eq!(result.results[0].qty, Decimal::from_f64(10.0).unwrap());
@@ -693,15 +724,18 @@ mod test {
     fn test_limit_sell_order_partially_filled() {
         let mut ob = OrderBook::new();
         // bid_q: (102.0, 10.0), (101.0, 5.0), (100.0, 20.0)
-        // ask: (101, 30.0)
+        // ask_q: (101, 30.0)
         // match:(102.0,10.0), (101.0,5.0)
         // bid_q_new: (100.0,20.0)
         // ask_q_new: (101.0,15.0)
 
-        post_limit_order(&mut ob, Direction::Buy, 102.0, 10.0);
-        post_limit_order(&mut ob, Direction::Buy, 101.0, 5.0);
-        post_limit_order(&mut ob, Direction::Buy, 100.0, 20.0);
-        let result = add_limit_order(&mut ob, Direction::Sell, 101.0, 30.0).unwrap();
+        post_limit_order(&mut ob, 1001, Direction::Buy, 102.0, 10.0);
+        post_limit_order(&mut ob, 1002, Direction::Buy, 101.0, 5.0);
+        post_limit_order(&mut ob, 1003, Direction::Buy, 100.0, 20.0);
+        let result = add_limit_order(&mut ob, 1004, Direction::Sell, 101.0, 30.0)
+            .unwrap()
+            .fill_result
+            .unwrap();
         assert_eq!(result.results.len(), 2);
         assert_eq!(result.results[0].price, Decimal::from_f64(102.0).unwrap());
         assert_eq!(result.results[0].qty, Decimal::from_f64(10.0).unwrap());
@@ -731,7 +765,10 @@ mod test {
         // match:(100, 5.0)
         // bid_q_new: (100.0, 18.0)
         // ask_q_new: (101.0,15.0)
-        let result2 = add_limit_order(&mut ob, Direction::Sell, 100.0, 2.0).unwrap();
+        let result2 = add_limit_order(&mut ob, 1005, Direction::Sell, 100.0, 2.0)
+            .unwrap()
+            .fill_result
+            .unwrap();
         assert_eq!(result2.results.len(), 1);
         assert_eq!(result2.results[0].price, Decimal::from_f64(100.0).unwrap());
         assert_eq!(result2.results[0].qty, Decimal::from_f64(2.0).unwrap());
@@ -754,10 +791,10 @@ mod test {
     #[test]
     fn test_snapshot() {
         let mut ob = OrderBook::new();
-        post_limit_order(&mut ob, Direction::Buy, 102.0, 10.0);
-        post_limit_order(&mut ob, Direction::Buy, 101.0, 5.0);
-        post_limit_order(&mut ob, Direction::Buy, 100.0, 20.0);
-        post_limit_order(&mut ob, Direction::Sell, 101.0, 30.0);
+        post_limit_order(&mut ob, 1001, Direction::Buy, 102.0, 10.0);
+        post_limit_order(&mut ob, 1002, Direction::Buy, 101.0, 5.0);
+        post_limit_order(&mut ob, 1003, Direction::Buy, 100.0, 20.0);
+        post_limit_order(&mut ob, 1004, Direction::Sell, 101.0, 30.0);
 
         let snapshot = ob.take_snapshot_with_depth(2).unwrap();
         assert_eq!(

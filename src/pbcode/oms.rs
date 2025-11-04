@@ -24,6 +24,9 @@ pub struct Order {
     /// 可选
     #[prost(string, tag = "9")]
     pub client_order_id: ::prost::alloc::string::String,
+    /// 对应STPStrategy枚举
+    #[prost(int32, tag = "10")]
+    pub stp_strategy: i32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -86,6 +89,9 @@ pub struct SymbolConfig {
     /// 对应SymbolState枚举
     #[prost(int32, tag = "4")]
     pub state: i32,
+    /// 价格波动限制百分比，例如0.1表示10%
+    #[prost(string, tag = "5")]
+    pub volatility_limit: ::prost::alloc::string::String,
 }
 /// ======================================= 行情类
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -186,7 +192,6 @@ pub struct GetBalanceRsp {
     #[prost(string, tag = "3")]
     pub margin_used: ::prost::alloc::string::String,
 }
-/// generate OrderState, direction, tif, order_type
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum OrderState {
@@ -320,40 +325,78 @@ impl OrderType {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
-pub enum SpotChangeReason {
-    UndefinedSpotChangeReason = 0,
-    Deposit = 1,
-    Withdraw = 2,
-    /// 账户间划转
-    Transfer = 3,
-    PlaceOrder = 4,
-    CancelOrder = 5,
-    FillOrder = 6,
+pub enum StpStrategy {
+    UndefinedStpStrategy = 0,
+    /// 撤销最老订单
+    CancelTaker = 1,
+    /// 撤销最新订单
+    CancelMaker = 2,
+    /// 撤销两个订单
+    CancelBoth = 3,
 }
-impl SpotChangeReason {
+impl StpStrategy {
     /// String value of the enum field names used in the ProtoBuf definition.
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            SpotChangeReason::UndefinedSpotChangeReason => "UndefinedSpotChangeReason",
-            SpotChangeReason::Deposit => "Deposit",
-            SpotChangeReason::Withdraw => "Withdraw",
-            SpotChangeReason::Transfer => "Transfer",
-            SpotChangeReason::PlaceOrder => "PlaceOrder",
-            SpotChangeReason::CancelOrder => "CancelOrder",
-            SpotChangeReason::FillOrder => "FillOrder",
+            StpStrategy::UndefinedStpStrategy => "UndefinedSTPStrategy",
+            StpStrategy::CancelTaker => "CancelTaker",
+            StpStrategy::CancelMaker => "CancelMaker",
+            StpStrategy::CancelBoth => "CancelBoth",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "UndefinedSpotChangeReason" => Some(Self::UndefinedSpotChangeReason),
+            "UndefinedSTPStrategy" => Some(Self::UndefinedStpStrategy),
+            "CancelTaker" => Some(Self::CancelTaker),
+            "CancelMaker" => Some(Self::CancelMaker),
+            "CancelBoth" => Some(Self::CancelBoth),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum BizAction {
+    UndefinedBizAction = 0,
+    Deposit = 1,
+    Withdraw = 2,
+    /// 账户间划转
+    Transfer = 3,
+    PlaceOrder = 4,
+    ReplaceOrder = 5,
+    CancelOrder = 6,
+    FillOrder = 7,
+}
+impl BizAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            BizAction::UndefinedBizAction => "UndefinedBizAction",
+            BizAction::Deposit => "Deposit",
+            BizAction::Withdraw => "Withdraw",
+            BizAction::Transfer => "Transfer",
+            BizAction::PlaceOrder => "PlaceOrder",
+            BizAction::ReplaceOrder => "ReplaceOrder",
+            BizAction::CancelOrder => "CancelOrder",
+            BizAction::FillOrder => "FillOrder",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "UndefinedBizAction" => Some(Self::UndefinedBizAction),
             "Deposit" => Some(Self::Deposit),
             "Withdraw" => Some(Self::Withdraw),
             "Transfer" => Some(Self::Transfer),
             "PlaceOrder" => Some(Self::PlaceOrder),
+            "ReplaceOrder" => Some(Self::ReplaceOrder),
             "CancelOrder" => Some(Self::CancelOrder),
             "FillOrder" => Some(Self::FillOrder),
             _ => None,
