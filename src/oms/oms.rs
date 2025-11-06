@@ -23,7 +23,8 @@ pub struct OMS {
     symbol_configs: oms::SymbolConfig,
     client_order_map: HashMap<String, OrderID>, // client_order_id -> order_id
     last_price: Decimal,                        // 交易对最新成交价
-    last_seq_id: SeqID,
+    last_seq_id: SeqID,                         // oms作为所有请求的sequencer
+    last_match_id: MatchID,                     // oms接受match_result, 用于过滤已处理的match_id
 }
 
 impl OMS {

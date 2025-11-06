@@ -10,8 +10,8 @@ use rust_decimal::Decimal;
 
 use crate::common::err_code;
 use crate::common::types::{
-    Direction, FillOrderResult, MatchRecord, MatchResult, Order, OrderID, OrderState, OrderType,
-    SeqID, TimeInForce,
+    Direction, FillOrderResult, MatchID, MatchRecord, MatchResult, Order, OrderID, OrderState,
+    OrderType, SeqID, TimeInForce,
 };
 use crate::pbcode::oms::BizAction;
 
@@ -194,6 +194,7 @@ pub struct OrderBookSnapshot {
     bid_orders: Vec<MakerOrder>,
     ask_orders: Vec<MakerOrder>,
     last_seq_id: u64,
+    last_match_id: u64,
 }
 
 pub(crate) trait OrderBookSnapshotHandler {
@@ -213,6 +214,7 @@ pub(crate) trait OrderBookRequestHandler {
 
 pub(crate) struct OrderBook {
     seq_id: SeqID, // last seqID had ever seen. for dedup & ignore outdated request
+    match_id: MatchID,
     order_id_to_orderbook_key: HashMap<OrderID, OrderBookKey>,
     bid_orders: BTreeOrderQueue,
     ask_orders: BTreeOrderQueue,
@@ -223,6 +225,7 @@ impl OrderBook {
     pub fn new() -> Self {
         Self {
             seq_id: 0,
+            match_id: 0,
             order_id_to_orderbook_key: HashMap::new(),
             bid_orders: BTreeOrderQueue::new(Direction::Buy),
             ask_orders: BTreeOrderQueue::new(Direction::Sell),
@@ -290,6 +293,7 @@ impl OrderBook {
         } else {
             (&mut self.ask_orders, &mut self.bid_orders)
         };
+        let mut new_match_id = self.match_id;
 
         if let Some((mut maker_key, mut maker)) = adversary_q.peek() {
             // keep fill until:
@@ -314,6 +318,8 @@ impl OrderBook {
                 results.push(MatchRecord {
                     seq_id: taker.order.seq_id,
                     prev_seq_id: taker.order.prev_seq_id,
+                    match_id: new_match_id + 1,
+                    prev_match_id: new_match_id,
                     price: maker.order.price,
                     qty: filled_qty,
                     direction: taker.order.direction,
@@ -335,7 +341,7 @@ impl OrderBook {
                     maker_account_id: maker.order.account_id,
                     symbol: taker.order.symbol.clone(),
                 });
-
+                new_match_id += 1;
                 total_filled_qty += filled_qty;
                 if let Some((k, v)) = adversary_q.next(&maker_key) {
                     maker_key = k;
@@ -348,7 +354,7 @@ impl OrderBook {
 
         if total_filled_qty > taker.order.target_qty {
             // invalid path
-            return Err(OrderBookErr::new(err_code::ERR_OB_INTERNAL));
+            return Err(OrderBookErr::new(err_code::ERR_INPOSSIBLE_STATE));
         }
 
         // 更新taker订单状态
@@ -487,6 +493,7 @@ impl OrderBookSnapshotHandler for OrderBook {
             bid_orders: self.bid_orders.take_queue_snapshot(),
             ask_orders: self.ask_orders.take_queue_snapshot(),
             last_seq_id: self.seq_id,
+            last_match_id: self.match_id,
         })
     }
 
@@ -511,6 +518,7 @@ impl OrderBookSnapshotHandler for OrderBook {
 
         Ok(OrderBook {
             seq_id: s.last_seq_id,
+            match_id: s.last_match_id,
             order_id_to_orderbook_key: order_id_to_key,
             bid_orders,
             ask_orders,

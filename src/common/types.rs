@@ -18,6 +18,7 @@ impl ToString for Symbol {
 pub type OrderID = String;
 pub type ClientOriginID = String;
 pub type SeqID = u64;
+pub type MatchID = u64;
 pub type Currency = String; // USD, BTC, ETH
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +122,8 @@ impl OrderDetail {
 pub(crate) struct MatchRecord {
     pub seq_id: SeqID,
     pub prev_seq_id: SeqID,
+    pub match_id: MatchID,
+    pub prev_match_id: MatchID,
     pub price: Decimal,
     pub qty: Decimal,
     pub direction: Direction,
@@ -175,3 +178,5 @@ pub(crate) struct CancelOrderResult {
     pub account_id: u64,
     pub order_state: OrderState,
 }
+
+// generate test kit for placeOrder, cancelOrder

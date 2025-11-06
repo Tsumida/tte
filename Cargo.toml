@@ -17,7 +17,9 @@ path = "src/lib.rs"
 rust_decimal ={ version = "1.39" }
 tonic = "0.9"
 prost = "0.11"
-tokio = { version = "1", features = ["full"] }
+# tokio = { version = "1", features = ["full"] }
+rust_decimal_macros = "1.39.0"
+log = "0.4"
 
 
 [build-dependencies]

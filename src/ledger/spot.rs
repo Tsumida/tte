@@ -5,17 +5,21 @@
 // allow dead code for incomplete implementation
 #![allow(dead_code)]
 
-use std::{cmp::max, collections::BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 
 use rust_decimal::Decimal;
 
 use crate::{
-    common::types::{Currency, Direction, MatchRecord, MatchResult, SeqID},
+    common::types::{Currency, Direction, MatchRecord, MatchResult, Order, SeqID},
     pbcode::oms,
 };
 
 trait SpotLedgerRPCHandler {
-    fn place_order(&mut self) {}
+    fn place_order(
+        &mut self,
+        order: Order,
+        amount: Decimal,
+    ) -> Result<SpotChangeResult, SpotLedgerErr>;
 }
 
 trait SpotLedgerMatchResultConsumer {
@@ -23,11 +27,6 @@ trait SpotLedgerMatchResultConsumer {
         &mut self,
         match_record: &MatchRecord,
     ) -> Result<Vec<SpotChangeResult>, SpotLedgerErr>;
-
-    fn replace_order(
-        &mut self,
-        match_result: &MatchResult,
-    ) -> Result<SpotChangeResult, SpotLedgerErr>;
 
     fn cancel_order(
         &mut self,
@@ -64,9 +63,8 @@ impl Spot {
 #[derive(Debug, Clone)]
 struct SpotChangeResult {
     is_action_success: bool,
-    action_failed_err: String,
-    spot_event_id: u64,
-    transfer_id: u64,
+    action_failed_err: Option<String>,
+    spot_id: u64,
     action: i32,
     spot_before: Spot,
     spot_after: Spot,
@@ -74,7 +72,7 @@ struct SpotChangeResult {
 }
 // 记录单次流程中的冻结额度，主要用于整体释放。
 // 场景：限价单撤单时要按orderID释放整个冻结额度
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct FrozenReceipt {
     frozen_id: String, // 对应order_id, withdraw_id, transfer_id等
     account_id: u64,
@@ -83,25 +81,167 @@ struct FrozenReceipt {
     target_frozen: Decimal, // 初始冻结额度, 在下单、改单时更新。
 }
 
+// 单币种状态修改
+#[derive(Debug, Clone)]
+struct SingleCurrencyTx {
+    spot_id: u64,
+    spot: Option<Spot>,
+    frozen_receipt: Option<FrozenReceipt>,
+}
+
+trait SingleCurrencyTxUpdater {
+    // deposit -> deposit + amount
+    fn add_deposit(&mut self, amount: Decimal) -> Result<(), SpotLedgerErr>;
+
+    // deposit -> deposit - amount
+    fn sub_deposit(&mut self, amount: Decimal) -> Result<(), SpotLedgerErr>;
+
+    // (deposit, None) -> (deposit - amount, Some(frozen_receipt))
+    fn freeze(&mut self, frozen_id: &str, amount: Decimal) -> Result<(), SpotLedgerErr>;
+
+    // (frozen, Some(frozen_receipt)) -> (frozen - amount, Some(frozen_receipt - amount))
+    fn release_frozen(&mut self, amount: Decimal) -> Result<(), SpotLedgerErr>;
+
+    // (frozen, Some(frozen_receipt)) -> (frozen - remain_frozen, None)
+    fn release_all(&mut self) -> Result<(), SpotLedgerErr>;
+}
+
+impl SingleCurrencyTxUpdater for SingleCurrencyTx {
+    fn add_deposit(&mut self, amount: Decimal) -> Result<(), SpotLedgerErr> {
+        if self.spot.is_none() {
+            return Err(SpotLedgerErr {
+                code: 2,
+                msg: "Spot is None when adding deposit".to_string(),
+            });
+        }
+        self.spot.as_mut().unwrap().deposit += amount;
+        Ok(())
+    }
+
+    fn sub_deposit(&mut self, amount: Decimal) -> Result<(), SpotLedgerErr> {
+        if self.spot.is_none() {
+            return Err(SpotLedgerErr {
+                code: 2,
+                msg: "Spot is None when subtracting deposit".to_string(),
+            });
+        }
+        let spot = self.spot.as_mut().unwrap();
+        if spot.deposit < amount {
+            return Err(SpotLedgerErr {
+                code: 1,
+                msg: format!(
+                    "Insufficient balance to sub for account_id {}, currency {}",
+                    spot.account_id, spot.currency
+                ),
+            });
+        }
+        spot.deposit -= amount;
+        Ok(())
+    }
+
+    fn freeze(&mut self, frozen_id: &str, amount: Decimal) -> Result<(), SpotLedgerErr> {
+        if self.frozen_receipt.is_some() {
+            return Err(SpotLedgerErr {
+                code: 3,
+                msg: "FrozenReceipt already exists for this transaction".to_string(),
+            });
+        }
+
+        if let Some(spot) = self.spot.as_mut() {
+            if spot.deposit - spot.frozen < amount {
+                return Err(SpotLedgerErr {
+                    code: 1,
+                    msg: format!(
+                        "Insufficient balance to freeze for account_id {}, currency {},current_deposit {}, current_frozen {}, freeze_amount {}",
+                        spot.account_id, spot.currency, spot.deposit, spot.frozen, amount
+                    ),
+                });
+            }
+            spot.frozen += amount;
+        }
+        self.frozen_receipt = Some(FrozenReceipt {
+            frozen_id: frozen_id.to_string(),
+            account_id: self.spot.as_ref().unwrap().account_id,
+            currency: self.spot.as_ref().unwrap().currency.clone(),
+            remain_frozen: amount,
+            target_frozen: amount,
+        });
+        Ok(())
+    }
+
+    fn release_frozen(&mut self, amount: Decimal) -> Result<(), SpotLedgerErr> {
+        if let Some(receipt) = &mut self.frozen_receipt {
+            if receipt.remain_frozen < amount {
+                return Err(SpotLedgerErr {
+                    code: 1,
+                    msg: format!(
+                        "Insufficient frozen amount to release for frozen_id {}",
+                        receipt.frozen_id
+                    ),
+                });
+            }
+            let spot = self.spot.as_mut().unwrap();
+            if spot.frozen < amount {
+                return Err(SpotLedgerErr {
+                    code: 2,
+                    msg: format!(
+                        "Spot frozen amount less than release amount for account_id {}, currency {}",
+                        spot.account_id, spot.currency
+                    ),
+                });
+            }
+            spot.frozen -= amount;
+            receipt.remain_frozen -= amount;
+            Ok(())
+        } else {
+            Err(SpotLedgerErr {
+                code: 2,
+                msg: "No frozen receipt to release frozen amount".to_string(),
+            })
+        }
+    }
+
+    fn release_all(&mut self) -> Result<(), SpotLedgerErr> {
+        if let Some(receipt) = &mut self.frozen_receipt {
+            let amount = receipt.remain_frozen;
+            let spot = self.spot.as_mut().unwrap();
+            if spot.frozen < amount {
+                return Err(SpotLedgerErr {
+                    code: 2,
+                    msg: format!(
+                        "Spot frozen amount less than release all amount for account_id {}, currency {}",
+                        spot.account_id, spot.currency
+                    ),
+                });
+            }
+            spot.frozen -= amount;
+        }
+        self.frozen_receipt = None;
+        Ok(())
+    }
+}
+
 struct SpotLedger {
     spots: BTreeMap<u64, BTreeMap<Currency, Spot>>, // account_id -> currency -> Spot
     order_frozen_receipts: BTreeMap<String, FrozenReceipt>, // frozen_id -> FrozenReceipt
-    withdraw_frozen_receipts: BTreeMap<String, FrozenReceipt>,
-    transfer_frozen_receipts: BTreeMap<String, FrozenReceipt>,
     last_seq_id: SeqID,
+    last_spot_id: u64, // 目前是sequencer commit后串行调用， 因此一个spot_id足够
 }
 
-// 所有更新方法必须要符合CAS原则，只有必定成功才更新状态;否则就输出失败事件。
+// 所有更新方法必须要符合CAS原则，只有必定成功才更新内存状态;否则就输出失败事件。
 // 对于失败事件，通过冲正来修复。
 impl SpotLedger {
     pub fn new() -> Self {
         SpotLedger {
+            last_spot_id: 0,
             spots: BTreeMap::new(),
             order_frozen_receipts: BTreeMap::new(),
-            withdraw_frozen_receipts: BTreeMap::new(),
-            transfer_frozen_receipts: BTreeMap::new(),
             last_seq_id: 0,
         }
+    }
+
+    pub fn get_frozen_receipt(&self, frozen_id: &str) -> Option<&FrozenReceipt> {
+        self.order_frozen_receipts.get(frozen_id)
     }
 
     pub fn get_spot(&self, account_id: u64, currency: &str) -> Option<&Spot> {
@@ -110,10 +250,94 @@ impl SpotLedger {
             .and_then(|currency_map| currency_map.get(currency))
     }
 
-    pub fn get_all_balances(&self, account_id: u64) -> BTreeMap<&Currency, &Spot> {
+    pub fn get_spot_or_default(&self, account_id: u64, currency: &str) -> Spot {
+        self.spots
+            .get(&account_id)
+            .and_then(|currency_map| currency_map.get(currency))
+            .cloned()
+            .unwrap_or(Spot::new(account_id, currency.to_string()))
+    }
+
+    pub fn get_spot_and_frozen(
+        &self,
+        account_id: u64,
+        currency: &str,
+        frozen_id: &str,
+    ) -> SingleCurrencyTx {
+        SingleCurrencyTx {
+            spot_id: self.current_spot_id(),
+            spot: Some(self.get_spot_or_default(account_id, currency)),
+            frozen_receipt: self.get_frozen_receipt(frozen_id).cloned(),
+        }
+    }
+
+    pub fn commit(
+        &mut self,
+        spot_id: u64,
+        before: SingleCurrencyTx,
+        after: SingleCurrencyTx,
+    ) -> SpotChangeResult {
+        // (None, Some) -> Insert
+        // (Some, Some) -> Update
+        // (Some, None) -> Delete
+        match (&before.spot, &after.spot) {
+            (_, Some(spot_after)) => {
+                // Insert or Update
+                self.spots
+                    .entry(spot_after.account_id)
+                    .or_insert_with(BTreeMap::new)
+                    .insert(spot_after.currency.clone(), spot_after.clone());
+            }
+            (Some(spot_before), None) => {
+                // Delete
+                if let Some(currency_map) = self.spots.get_mut(&spot_before.account_id) {
+                    currency_map.remove(&spot_before.currency);
+                    if currency_map.is_empty() {
+                        self.spots.remove(&spot_before.account_id);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        match (&before.frozen_receipt, &after.frozen_receipt) {
+            (_, Some(receipt_after)) => {
+                // Insert or Update
+                self.order_frozen_receipts
+                    .insert(receipt_after.frozen_id.clone(), receipt_after.clone());
+            }
+            (Some(receipt_before), None) => {
+                // Delete
+                self.order_frozen_receipts.remove(&receipt_before.frozen_id);
+            }
+            _ => {}
+        }
+
+        SpotChangeResult {
+            is_action_success: true,
+            action_failed_err: None,
+            spot_id: spot_id,
+            action: oms::BizAction::ReplaceOrder as i32,
+            spot_before: before.spot.unwrap(),
+            spot_after: after.spot.unwrap(),
+        }
+    }
+
+    #[inline]
+    fn current_spot_id(&self) -> u64 {
+        self.last_spot_id
+    }
+
+    #[inline]
+    fn advance_spot_id(&mut self) -> u64 {
+        self.last_spot_id += 1;
+        self.last_spot_id
+    }
+
+    fn get_all_balances(&self, account_id: u64) -> HashMap<&Currency, &Spot> {
         match self.spots.get(&account_id) {
             Some(currency_map) => currency_map.iter().collect(),
-            None => BTreeMap::new(),
+            None => HashMap::new(),
         }
     }
 
@@ -123,139 +347,16 @@ impl SpotLedger {
         account_id: u64,
         currency: &str,
         amount: Decimal,
-    ) -> Result<(Spot, Spot), SpotLedgerErr> {
-        let spot = self
-            .spots
-            .entry(account_id)
-            .or_insert_with(BTreeMap::new)
-            .entry(currency.to_string())
-            .or_insert_with(|| Spot::new(account_id, currency.to_string()));
+    ) -> Result<(), SpotLedgerErr> {
+        let mut tx = SingleCurrencyTx {
+            spot_id: self.advance_spot_id(),
+            spot: Some(self.get_spot_or_default(account_id, currency)),
+            frozen_receipt: None,
+        };
+        _ = tx.add_deposit(amount)?;
+        _ = self.commit(tx.spot_id, tx.clone(), tx);
 
-        let before = spot.clone();
-
-        spot.deposit += amount;
-        Ok((before, spot.clone()))
-    }
-
-    // 按order_id创建冻结额度，并返回变化后的Spot和FrozenReceipt
-    fn freeze(
-        &mut self,
-        account_id: u64,
-        currency: &str,
-        amount: Decimal,
-        frozen_id: &str,
-    ) -> Result<(Spot, FrozenReceipt), SpotLedgerErr> {
-        let spot = self
-            .spots
-            .get_mut(&account_id)
-            .and_then(|currency_map| currency_map.get_mut(currency))
-            .ok_or(SpotLedgerErr {
-                code: 1,
-                msg: format!(
-                    "Spot not found for account_id {}, currency {}",
-                    account_id, currency
-                ),
-            })?;
-
-        if spot.deposit - spot.frozen < amount {
-            return Err(SpotLedgerErr {
-                code: 2,
-                msg: format!(
-                    "Insufficient balance to freeze for account_id {}, currency {}",
-                    account_id, currency
-                ),
-            });
-        }
-
-        spot.frozen += amount;
-
-        let receipt = self
-            .order_frozen_receipts
-            .entry(frozen_id.to_string())
-            .or_insert(FrozenReceipt {
-                frozen_id: frozen_id.to_string(),
-                account_id,
-                currency: currency.to_string(),
-                remain_frozen: Decimal::ZERO,
-                target_frozen: Decimal::ZERO,
-            });
-
-        receipt.remain_frozen += amount;
-        receipt.target_frozen += amount;
-
-        Ok((spot.clone(), receipt.clone()))
-    }
-
-    // 按froze_id释放一定的冻结额度, 并返回变化后的Spot和FrozenReceipt
-    fn release_frozen_amount(
-        &mut self,
-        frozen_id: &str,
-        amount: Decimal,
-    ) -> Result<(Spot, FrozenReceipt), SpotLedgerErr> {
-        let receipt = self
-            .order_frozen_receipts
-            .get_mut(frozen_id)
-            .ok_or(SpotLedgerErr {
-                code: 1,
-                msg: format!("FrozenReceipt not found for frozen_id {}", frozen_id),
-            })?;
-
-        if receipt.remain_frozen < amount {
-            return Err(SpotLedgerErr {
-                code: 2,
-                msg: format!(
-                    "Insufficient frozen amount to release for frozen_id {}",
-                    frozen_id
-                ),
-            });
-        }
-
-        let spot = self
-            .spots
-            .get_mut(&receipt.account_id)
-            .and_then(|currency_map| currency_map.get_mut(&receipt.currency))
-            .ok_or(SpotLedgerErr {
-                code: 3,
-                msg: format!(
-                    "Spot not found for account_id {}, currency {}",
-                    receipt.account_id, receipt.currency
-                ),
-            })?;
-
-        spot.frozen -= amount;
-        receipt.remain_frozen -= amount;
-
-        Ok((spot.clone(), receipt.clone()))
-    }
-
-    // 按frozen_id释放全部冻结额度, 并返回变化后的Spot和FrozenReceipt
-    fn release_all(&mut self, frozen_id: &str) -> Result<(Spot, FrozenReceipt), SpotLedgerErr> {
-        let receipt = self
-            .order_frozen_receipts
-            .get_mut(frozen_id)
-            .ok_or(SpotLedgerErr {
-                code: 1,
-                msg: format!("FrozenReceipt not found for frozen_id {}", frozen_id),
-            })?;
-
-        let amount = receipt.remain_frozen;
-
-        let spot = self
-            .spots
-            .get_mut(&receipt.account_id)
-            .and_then(|currency_map| currency_map.get_mut(&receipt.currency))
-            .ok_or(SpotLedgerErr {
-                code: 3,
-                msg: format!(
-                    "Spot not found for account_id {}, currency {}",
-                    receipt.account_id, receipt.currency
-                ),
-            })?;
-
-        spot.frozen -= amount;
-        receipt.remain_frozen = Decimal::ZERO;
-
-        Ok((spot.clone(), receipt.clone()))
+        Ok(())
     }
 }
 
@@ -265,173 +366,80 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
         &mut self,
         match_result: &MatchRecord,
     ) -> Result<Vec<SpotChangeResult>, SpotLedgerErr> {
+        let spot_id = self.advance_spot_id();
         let taker_order_id = match_result.taker_order_id.clone();
         let maker_order_id = match_result.maker_order_id.clone();
+        let mut taker_base_tx = self.get_spot_and_frozen(
+            match_result.taker_account_id,
+            &match_result.symbol.base,
+            &taker_order_id,
+        );
+        let mut taker_quote_tx = self.get_spot_and_frozen(
+            match_result.taker_account_id,
+            &match_result.symbol.quote,
+            &taker_order_id,
+        );
+        let mut maker_base_tx = self.get_spot_and_frozen(
+            match_result.maker_account_id,
+            &match_result.symbol.base,
+            &maker_order_id,
+        );
+        let mut maker_quote_tx = self.get_spot_and_frozen(
+            match_result.maker_account_id,
+            &match_result.symbol.quote,
+            &maker_order_id,
+        );
 
-        let mut taker = self
-            .order_frozen_receipts
-            .get_mut(&taker_order_id)
-            .cloned()
-            .ok_or(SpotLedgerErr {
+        // checker
+        if taker_base_tx.spot.is_none()
+            || taker_quote_tx.spot.is_none()
+            || maker_base_tx.spot.is_none()
+            || maker_quote_tx.spot.is_none()
+        {
+            return Err(SpotLedgerErr {
                 code: 1,
-                msg: format!("Taker order_id {} not found", taker_order_id),
-            })?;
-
-        let mut maker = self
-            .order_frozen_receipts
-            .get_mut(&maker_order_id)
-            .cloned()
-            .ok_or(SpotLedgerErr {
-                code: 1,
-                msg: format!("Maker order_id {} not found", maker_order_id),
-            })?;
-
-        // 根据买卖方向，更新amount.
-        let (taker_amount, maker_amount) = match match_result.direction {
-            Direction::Buy => (match_result.qty * match_result.price, match_result.qty),
-            Direction::Sell => (match_result.qty, match_result.qty * match_result.price),
-        };
-        taker.remain_frozen -= taker_amount; // todo: 如果amount为负数, release会导致资产虚增，应该检查。
-        maker.remain_frozen -= maker_amount;
-
-        let taker_spot = self
-            .spots
-            .get_mut(&taker.account_id)
-            .and_then(|currency_map| currency_map.get_mut(&taker.currency))
-            .ok_or(SpotLedgerErr {
-                code: 2,
-                msg: format!(
-                    "Taker spot not found for account_id {}, currency {}",
-                    taker.account_id, taker.currency
-                ),
-            })?;
-        let taker_before = taker_spot.clone();
-        taker_spot.frozen -= taker_amount;
-        taker_spot.deposit += taker_amount;
-        let taker_log = SpotChangeResult {
-            is_action_success: true,
-            action_failed_err: "".to_string(),
-            spot_event_id: 0,
-            transfer_id: 0,
-            action: oms::BizAction::FillOrder as i32,
-            spot_before: taker_before,
-            spot_after: taker_spot.clone(),
-        };
-
-        let maker_spot = self
-            .spots
-            .get_mut(&maker.account_id)
-            .and_then(|currency_map| currency_map.get_mut(&maker.currency))
-            .ok_or(SpotLedgerErr {
-                code: 2,
-                msg: format!(
-                    "Maker spot not found for account_id {}, currency {}",
-                    maker.account_id, maker.currency
-                ),
-            })?;
-        let maker_before = maker_spot.clone();
-        maker_spot.frozen -= maker_amount;
-        maker_spot.deposit += maker_amount;
-
-        let maker_log = SpotChangeResult {
-            is_action_success: true,
-            action_failed_err: "".to_string(),
-            spot_event_id: 0,
-            transfer_id: 0,
-            action: oms::BizAction::FillOrder as i32,
-            spot_before: maker_before,
-            spot_after: maker_spot.clone(),
-        };
-
-        // 这里必定成功，更新Spot状态
-        if !match_result.is_taker_fulfilled {
-            _ = self
-                .order_frozen_receipts
-                .insert(taker_order_id.clone(), taker);
-        } else {
-            _ = self.order_frozen_receipts.remove(&taker_order_id);
+                msg: "One of the spots is None in fill_order".to_string(),
+            });
         }
-        if !match_result.is_maker_fulfilled {
-            _ = self
-                .order_frozen_receipts
-                .insert(maker_order_id.clone(), maker);
-        } else {
-            _ = self.order_frozen_receipts.remove(&maker_order_id);
+
+        let before = [
+            taker_base_tx.clone(),
+            taker_quote_tx.clone(),
+            maker_base_tx.clone(),
+            maker_quote_tx.clone(),
+        ];
+
+        // do tx.
+        match match_result.direction {
+            Direction::Buy => {
+                // BTC/USD, price=10000, qty=1
+                // taker: BTC+1, USD-10000, USD_FROZEN-10000
+                // maker: BTC-1，USD+10000, BTC_FROZEN-1
+                taker_base_tx.add_deposit(match_result.qty)?;
+                taker_quote_tx.sub_deposit(match_result.price * match_result.qty)?;
+                taker_quote_tx.release_frozen(match_result.price * match_result.qty)?;
+                maker_base_tx.sub_deposit(match_result.qty)?;
+                maker_quote_tx.add_deposit(match_result.price * match_result.qty)?;
+                maker_base_tx.release_frozen(match_result.qty)?;
+            }
+            Direction::Sell => {
+                taker_base_tx.sub_deposit(match_result.qty)?;
+                taker_base_tx.release_frozen(match_result.qty)?;
+                taker_quote_tx.add_deposit(match_result.price * match_result.qty)?;
+                maker_base_tx.add_deposit(match_result.qty)?;
+                maker_quote_tx.sub_deposit(match_result.price * match_result.qty)?;
+                maker_quote_tx.release_frozen(match_result.price * match_result.qty)?;
+            }
         }
+
+        let after = [taker_base_tx, taker_quote_tx, maker_base_tx, maker_quote_tx];
 
         // 生成spot_log
-        Ok(vec![taker_log, maker_log])
-    }
-
-    fn replace_order(
-        &mut self,
-        match_result: &MatchResult,
-    ) -> Result<SpotChangeResult, SpotLedgerErr> {
-        let result = match_result.replace_result.as_ref().ok_or(SpotLedgerErr {
-            code: 3,
-            msg: "No replace_result in MatchResult".to_string(),
-        })?;
-
-        if !result.is_replace_success {
-            return Err(SpotLedgerErr {
-                code: 5,
-                msg: format!(
-                    "Replace order failed: {}",
-                    result.err_msg.clone().unwrap_or_default()
-                ),
-            });
-        }
-
-        if result.order_state.is_final() {
-            return Err(SpotLedgerErr {
-                code: 4,
-                msg: "Replace order result is in final state".to_string(),
-            });
-        }
-
-        let (currency, new_frozen): (&str, Decimal) = match result.direction {
-            Direction::Buy => (
-                result.symbol.quote.as_ref(),
-                result.new_price * result.new_quantity,
-            ),
-            Direction::Sell => (result.symbol.base.as_ref(), result.new_quantity),
-        };
-
-        let order = self
-            .order_frozen_receipts
-            .get_mut(&result.order_id)
-            .ok_or(SpotLedgerErr {
-                code: 1,
-                msg: format!("Order_id {} not found", result.order_id),
-            })?;
-
-        let spot = self
-            .spots
-            .get_mut(&result.account_id)
-            .and_then(|currency_map| currency_map.get_mut(currency))
-            .ok_or(SpotLedgerErr {
-                code: 2,
-                msg: format!(
-                    "Spot not found for account_id {},or {}",
-                    result.account_id, result.order_id
-                ),
-            })?;
-
-        // update frozen & receipt
-        let frozen_delta = max(Decimal::ZERO, new_frozen - order.target_frozen);
-        spot.frozen -= frozen_delta;
-        order.target_frozen = new_frozen;
-        order.remain_frozen -= frozen_delta; // 保证 target_frozen - remain_frozen = 已成交量不变
-
-        Ok(SpotChangeResult {
-            is_action_success: true,
-            action_failed_err: "".to_string(),
-            spot_event_id: 0,
-            transfer_id: 0,
-            action: oms::BizAction::ReplaceOrder as i32,
-            spot_before: spot.clone(),
-            spot_after: spot.clone(),
-        })
+        Ok(before
+            .into_iter()
+            .zip(after.into_iter())
+            .map(|(before, after)| self.commit(spot_id, before, after))
+            .collect())
     }
 
     fn cancel_order(
@@ -457,46 +465,41 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
             Direction::Buy => result.symbol.quote.as_ref(),
             Direction::Sell => result.symbol.base.as_ref(),
         };
-
-        // delete receipts
-        let order = self
-            .order_frozen_receipts
-            .remove(&result.order_id)
-            .ok_or(SpotLedgerErr {
-                code: 1,
-                msg: format!("Order_id {} not found", result.order_id),
-            })?;
-
-        // release frozen
-        let spot = self
-            .spots
-            .get_mut(&result.account_id)
-            .and_then(|currency_map| currency_map.get_mut(currency))
-            .ok_or(SpotLedgerErr {
-                code: 2,
-                msg: format!(
-                    "Spot not found for account_id {},or {}",
-                    result.account_id, result.order_id
-                ),
-            })?;
-        let spot_before = spot.clone();
-        let remain_frozen = order.remain_frozen;
-        spot.frozen -= remain_frozen;
-
-        Ok(SpotChangeResult {
-            is_action_success: true,
-            action_failed_err: "".to_string(),
-            spot_event_id: 0,
-            transfer_id: 0,
-            action: oms::BizAction::ReplaceOrder as i32,
-            spot_before: spot_before,
-            spot_after: spot.clone(),
-        })
+        let spot_id = self.advance_spot_id();
+        let mut tx = self.get_spot_and_frozen(result.account_id, currency, &result.order_id);
+        if tx.spot.is_none() {
+            return Err(SpotLedgerErr {
+                code: 4,
+                msg: "Spot is None in cancel_order".to_string(),
+            });
+        }
+        let before = tx.clone();
+        tx.release_all()?;
+        Ok(self.commit(spot_id, before, tx))
     }
 }
 
 impl SpotLedgerRPCHandler for SpotLedger {
-    fn place_order(&mut self) {}
+    fn place_order(
+        &mut self,
+        order: Order,
+        amount: Decimal,
+    ) -> Result<SpotChangeResult, SpotLedgerErr> {
+        // query: 从self获取最新状态, 构建SingleCurrencyTx
+        let spot_id = self.advance_spot_id();
+        let currency = match order.direction {
+            Direction::Buy => order.symbol.quote.as_ref(),
+            Direction::Sell => order.symbol.base.as_ref(),
+        };
+        let before = SingleCurrencyTx {
+            spot_id: spot_id,
+            spot: self.get_spot(order.account_id, currency).cloned(),
+            frozen_receipt: None,
+        };
+        let mut tx = before.clone();
+        tx.freeze(&order.order_id, amount)?;
+        Ok(self.commit(spot_id, before, tx))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -515,7 +518,9 @@ impl std::fmt::Display for SpotLedgerErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::testkit;
     use rust_decimal::prelude::FromPrimitive;
+    use rust_decimal_macros::dec;
 
     fn add_balance(l: &mut SpotLedger, account_id: u64, currency: &str, amount: f64) {
         l.add_deposit(account_id, currency, Decimal::from_f64(amount).unwrap())
@@ -539,10 +544,87 @@ mod tests {
     }
 
     #[test]
-    fn test_freeze_release() {
+
+    fn test_fill() {
+        // 模拟1001, 1002两个订单完全成交
+        // 1002: 初始状态(BTC_deposit=1, frozen=0), 执行：以10000*0.3价格卖出1个BTC, 以9800*0.5价格卖出0.2个BTC
+        // 1001：初始状态(USDT_deposit=10000, frozen=0), 执行以10000*0.5价格买入1个BTC
         let mut ledger = SpotLedger::new();
-        add_balance(&mut ledger, 1001, "BTC", 1.0);
-        add_balance(&mut ledger, 1001, "USD", 10000.0);
-        add_balance(&mut ledger, 1001, "USD", 2000.0);
+        add_balance(&mut ledger, 1001, "USDT", 10000.0);
+        add_balance(&mut ledger, 1002, "BTC", 1.0);
+
+        let orders = [
+            testkit::new_limit_order("ORD10000001", 1001, Direction::Buy, dec!(10000), dec!(0.5)),
+            testkit::new_limit_order("ORD10000002", 1002, Direction::Sell, dec!(10000), dec!(0.3)),
+            testkit::new_limit_order("ORD10000003", 1002, Direction::Sell, dec!(9800), dec!(0.2)),
+        ];
+        for order in orders.iter() {
+            let amount = match order.direction {
+                Direction::Buy => order.price * order.target_qty,
+                Direction::Sell => order.target_qty,
+            };
+            log::info!("Placing order: {:?}", amount.to_string());
+            let _ = ledger.place_order(order.clone(), amount).unwrap();
+        }
+
+        let match_records = [
+            testkit::fill_buy_limit_order(&orders[0], &orders[1], dec!(0.3)),
+            testkit::fill_buy_limit_order(&orders[0], &orders[2], dec!(0.2)),
+        ];
+
+        for match_record in match_records.into_iter() {
+            for record in match_record.fill_result.unwrap().results.iter() {
+                let _ = ledger.fill_order(record).unwrap();
+            }
+        }
+
+        let balance_1001 = ledger.get_all_balances(1001);
+        let balance_1002 = ledger.get_all_balances(1002);
+
+        println!("Balance 1001: {:?}", balance_1001);
+        println!("Balance 1002: {:?}", balance_1002);
+
+        assert!(
+            balance_1001.get(&"USDT".to_string()).unwrap().deposit
+                == Decimal::from_f64(5040.0).unwrap()
+        );
+        assert!(
+            balance_1001.get(&"BTC".to_string()).unwrap().deposit
+                == Decimal::from_f64(0.5).unwrap()
+        );
+        assert!(
+            balance_1002.get(&"BTC".to_string()).unwrap().deposit
+                == Decimal::from_f64(1.0 - 0.3 - 0.2).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_cancel() {
+        // 模拟1001下单后撤单
+        // 1001：初始状态(USDT_deposit=10000, frozen=0), 执行以10000*0.5价格买入1个BTC
+        let mut ledger = SpotLedger::new();
+        add_balance(&mut ledger, 1001, "USDT", 10000.0);
+
+        let orders = [testkit::new_limit_order(
+            "ORD10000001",
+            1001,
+            Direction::Buy,
+            dec!(10000),
+            dec!(0.5),
+        )];
+        for order in orders.iter() {
+            let amount = match order.direction {
+                Direction::Buy => order.price * order.target_qty,
+                Direction::Sell => order.target_qty,
+            };
+            log::info!("Placing order: {:?}", amount.to_string());
+            let _ = ledger.place_order(order.clone(), amount).unwrap();
+        }
+
+        let balance_1001 = ledger.get_all_balances(1001);
+        println!("Balance 1001: {:?}", balance_1001);
+
+        assert!(balance_1001.get(&"USDT".to_string()).unwrap().deposit == dec!(10000.0),);
+        assert!(balance_1001.get(&"USDT".to_string()).unwrap().frozen == dec!(5000.0));
     }
 }

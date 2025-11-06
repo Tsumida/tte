@@ -1,0 +1,74 @@
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
+
+use crate::pbcode::oms::BizAction;
+
+use crate::common::types::*; // 假设你上面的结构体定义放在 types.rs
+
+/// 模拟下单
+pub fn new_limit_order(
+    order_id: &str,
+    account_id: u64,
+    direction: Direction,
+    price: Decimal,
+    qty: Decimal,
+) -> Order {
+    Order {
+        order_id: order_id.to_string(),
+        account_id,
+        client_origin_id: format!("CLIENT_{}", order_id),
+        seq_id: 1,
+        prev_seq_id: 0,
+        time_in_force: TimeInForce::GTK,
+        order_type: OrderType::Limit,
+        direction,
+        price,
+        target_qty: qty,
+        post_only: false,
+        symbol: Symbol {
+            base: "BTC".to_string(),
+            quote: "USDT".to_string(),
+        },
+    }
+}
+
+/// 模拟买单成交
+pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchResult {
+    let symbol = buy.symbol.clone();
+    let mut match_records = vec![];
+
+    // 第一次成交 0.5 BTC
+    match_records.push(MatchRecord {
+        seq_id: 2,
+        prev_seq_id: 1,
+        match_id: 1,
+        prev_match_id: 0,
+        price: sell.price,
+        qty: qty,
+        direction: Direction::Buy,
+        taker_order_id: buy.order_id.clone(),
+        taker_account_id: buy.account_id,
+        taker_state: OrderState::PartiallyFilled,
+        maker_order_id: sell.order_id.clone(),
+        maker_account_id: sell.account_id,
+        maker_state: OrderState::PartiallyFilled,
+        is_taker_fulfilled: false,
+        is_maker_fulfilled: false,
+        symbol: symbol.clone(),
+    });
+
+    let fill_result = FillOrderResult {
+        original_order: buy.clone(),
+        symbol: symbol.clone(),
+        results: match_records,
+        order_state: OrderState::Filled,
+        total_filled_qty: dec!(1.0),
+    };
+
+    MatchResult {
+        action: BizAction::FillOrder,
+        fill_result: Some(fill_result),
+        replace_result: None,
+        cancel_result: None,
+    }
+}
