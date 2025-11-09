@@ -14,7 +14,7 @@ use crate::{
     pbcode::oms,
 };
 
-trait SpotLedgerRPCHandler {
+pub trait SpotLedgerRPCHandler {
     fn place_order(
         &mut self,
         order: Order,
@@ -22,7 +22,7 @@ trait SpotLedgerRPCHandler {
     ) -> Result<SpotChangeResult, SpotLedgerErr>;
 }
 
-trait SpotLedgerMatchResultConsumer {
+pub(crate) trait SpotLedgerMatchResultConsumer {
     fn fill_order(
         &mut self,
         match_record: &MatchRecord,
@@ -61,7 +61,7 @@ impl Spot {
 
 // 单账户的币种余额变动流水
 #[derive(Debug, Clone)]
-struct SpotChangeResult {
+pub struct SpotChangeResult {
     is_action_success: bool,
     action_failed_err: Option<String>,
     spot_id: u64,
@@ -73,7 +73,7 @@ struct SpotChangeResult {
 // 记录单次流程中的冻结额度，主要用于整体释放。
 // 场景：限价单撤单时要按orderID释放整个冻结额度
 #[derive(Debug, Clone)]
-struct FrozenReceipt {
+pub struct FrozenReceipt {
     frozen_id: String, // 对应order_id, withdraw_id, transfer_id等
     account_id: u64,
     currency: Currency,
@@ -83,7 +83,7 @@ struct FrozenReceipt {
 
 // 单币种状态修改
 #[derive(Debug, Clone)]
-struct SingleCurrencyTx {
+pub struct SingleCurrencyTx {
     spot_id: u64,
     spot: Option<Spot>,
     frozen_receipt: Option<FrozenReceipt>,
@@ -221,7 +221,7 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
     }
 }
 
-struct SpotLedger {
+pub struct SpotLedger {
     spots: BTreeMap<u64, BTreeMap<Currency, Spot>>, // account_id -> currency -> Spot
     order_frozen_receipts: BTreeMap<String, FrozenReceipt>, // frozen_id -> FrozenReceipt
     last_seq_id: SeqID,
@@ -258,7 +258,7 @@ impl SpotLedger {
             .unwrap_or(Spot::new(account_id, currency.to_string()))
     }
 
-    pub fn get_spot_and_frozen(
+    pub(crate) fn get_spot_and_frozen(
         &self,
         account_id: u64,
         currency: &str,
@@ -342,7 +342,7 @@ impl SpotLedger {
     }
 
     // 新增Spot，并返回变化前的Spot
-    fn add_deposit(
+    pub(crate) fn add_deposit(
         &mut self,
         account_id: u64,
         currency: &str,
@@ -518,14 +518,11 @@ impl std::fmt::Display for SpotLedgerErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ledger::testkit as spotkit;
+    use crate::ledger::testkit::add_balance;
     use crate::testkit::testkit;
     use rust_decimal::prelude::FromPrimitive;
     use rust_decimal_macros::dec;
-
-    fn add_balance(l: &mut SpotLedger, account_id: u64, currency: &str, amount: f64) {
-        l.add_deposit(account_id, currency, Decimal::from_f64(amount).unwrap())
-            .unwrap();
-    }
 
     #[test]
     fn test_place_order() {
@@ -550,8 +547,8 @@ mod tests {
         // 1002: 初始状态(BTC_deposit=1, frozen=0), 执行：以10000*0.3价格卖出1个BTC, 以9800*0.5价格卖出0.2个BTC
         // 1001：初始状态(USDT_deposit=10000, frozen=0), 执行以10000*0.5价格买入1个BTC
         let mut ledger = SpotLedger::new();
-        add_balance(&mut ledger, 1001, "USDT", 10000.0);
-        add_balance(&mut ledger, 1002, "BTC", 1.0);
+        spotkit::add_balance(&mut ledger, 1001, "USDT", 10000.0);
+        spotkit::add_balance(&mut ledger, 1002, "BTC", 1.0);
 
         let orders = [
             testkit::new_limit_order("ORD10000001", 1001, Direction::Buy, dec!(10000), dec!(0.5)),
@@ -599,19 +596,19 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel() {
+    fn test_partially_filled_and_cancel() {
         // 模拟1001下单后撤单
         // 1001：初始状态(USDT_deposit=10000, frozen=0), 执行以10000*0.5价格买入1个BTC
+        // 1002--部分成交，成交0.5个BTC，剩余0.5个BTC撤单
+        // 操作2：撤单
         let mut ledger = SpotLedger::new();
         add_balance(&mut ledger, 1001, "USDT", 10000.0);
+        add_balance(&mut ledger, 1002, "BTC", 1.0);
 
-        let orders = [testkit::new_limit_order(
-            "ORD10000001",
-            1001,
-            Direction::Buy,
-            dec!(10000),
-            dec!(0.5),
-        )];
+        let orders = [
+            testkit::new_limit_order("ORD10000001", 1001, Direction::Buy, dec!(10000), dec!(0.5)),
+            testkit::new_limit_order("ORD10000002", 1002, Direction::Sell, dec!(10000), dec!(0.3)),
+        ];
         for order in orders.iter() {
             let amount = match order.direction {
                 Direction::Buy => order.price * order.target_qty,
@@ -621,10 +618,46 @@ mod tests {
             let _ = ledger.place_order(order.clone(), amount).unwrap();
         }
 
-        let balance_1001 = ledger.get_all_balances(1001);
-        println!("Balance 1001: {:?}", balance_1001);
+        let match_records = [testkit::fill_buy_limit_order(
+            &orders[0],
+            &orders[1],
+            dec!(0.3),
+        )];
 
-        assert!(balance_1001.get(&"USDT".to_string()).unwrap().deposit == dec!(10000.0),);
-        assert!(balance_1001.get(&"USDT".to_string()).unwrap().frozen == dec!(5000.0));
+        for match_record in match_records.into_iter() {
+            for record in match_record.fill_result.unwrap().results.iter() {
+                let _ = ledger.fill_order(record).unwrap();
+            }
+        }
+
+        let balance_1001 = ledger.get_all_balances(1001);
+        let balance_1002 = ledger.get_all_balances(1002);
+
+        println!("Balance 1001: {:?}", balance_1001);
+        println!("Balance 1002: {:?}", balance_1002);
+
+        assert!(
+            balance_1001.get(&"USDT".to_string()).unwrap().deposit
+                == Decimal::from_f64(7000.0).unwrap()
+        );
+        assert!(
+            balance_1001.get(&"BTC".to_string()).unwrap().deposit
+                == Decimal::from_f64(0.3).unwrap()
+        );
+        assert!(
+            balance_1001.get(&"USDT".to_string()).unwrap().frozen
+                == Decimal::from_f64(2000.0).unwrap(),
+        );
+
+        assert!(
+            ledger
+                .cancel_order(&testkit::cancel_buy_limit_order(&orders[0]))
+                .is_ok()
+        );
+        let balance_1001_after = ledger.get_all_balances(1001);
+        println!("Balance 1001 after cancel: {:?}", balance_1001_after);
+        assert!(balance_1001_after.get(&"USDT".to_string()).unwrap().deposit == dec!(7000.0));
+        assert!(balance_1001_after.get(&"BTC".to_string()).unwrap().deposit == dec!(0.3));
+        assert!(balance_1001_after.get(&"USDT".to_string()).unwrap().frozen == Decimal::ZERO);
     }
 }

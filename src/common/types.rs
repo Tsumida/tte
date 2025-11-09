@@ -62,7 +62,7 @@ impl OrderState {
 
 // 订单结构体
 #[derive(Debug, Clone)]
-pub(crate) struct Order {
+pub struct Order {
     pub(crate) order_id: OrderID,
     pub(crate) account_id: u64,
     pub(crate) client_origin_id: ClientOriginID,
@@ -84,7 +84,7 @@ impl Order {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct OrderDetail {
+pub struct OrderDetail {
     original: Order,
     current_state: OrderState,
     filled_qty: Decimal,

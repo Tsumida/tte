@@ -20,7 +20,12 @@ prost = "0.11"
 # tokio = { version = "1", features = ["full"] }
 rust_decimal_macros = "1.39.0"
 log = "0.4"
+criterion = "0.7.0"
 
 
 [build-dependencies]
 tonic-build = { version = "0.9"}
+
+[[bench]]
+name = "ledger"
+harness = false

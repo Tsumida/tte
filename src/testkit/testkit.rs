@@ -1,5 +1,6 @@
+#![allow(dead_code)]
+
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
 
 use crate::pbcode::oms::BizAction;
 
@@ -62,7 +63,7 @@ pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchRes
         symbol: symbol.clone(),
         results: match_records,
         order_state: OrderState::Filled,
-        total_filled_qty: dec!(1.0),
+        total_filled_qty: qty,
     };
 
     MatchResult {
@@ -70,5 +71,25 @@ pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchRes
         fill_result: Some(fill_result),
         replace_result: None,
         cancel_result: None,
+    }
+}
+
+// 模拟撤单
+pub fn cancel_buy_limit_order(buy: &Order) -> MatchResult {
+    let symbol = buy.symbol.clone();
+    let cancel_result = CancelOrderResult {
+        is_cancel_success: true,
+        err_msg: None,
+        direction: Direction::Buy,
+        order_id: buy.order_id.clone(),
+        account_id: buy.account_id,
+        symbol: symbol.clone(),
+        order_state: OrderState::Cancelled,
+    };
+    MatchResult {
+        action: BizAction::CancelOrder,
+        fill_result: None,
+        replace_result: None,
+        cancel_result: Some(cancel_result),
     }
 }
