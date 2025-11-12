@@ -1,55 +1,48 @@
 #![allow(dead_code)]
 
-use crate::pbcode::oms::BizAction;
+use crate::pbcode::oms::{self, BizAction};
+use getset::Getters;
 use rust_decimal::Decimal;
 
-#[derive(Debug, Clone)]
-pub struct Symbol {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TradePair {
     pub base: String,
     pub quote: String,
 }
 
-impl ToString for Symbol {
+impl From<oms::TradePair> for TradePair {
+    fn from(tp: oms::TradePair) -> Self {
+        TradePair {
+            base: tp.base,
+            quote: tp.quote,
+        }
+    }
+}
+
+impl Into<oms::TradePair> for TradePair {
+    fn into(self) -> oms::TradePair {
+        oms::TradePair {
+            base: self.base,
+            quote: self.quote,
+        }
+    }
+}
+
+impl ToString for TradePair {
     fn to_string(&self) -> String {
         format!("{}{}", self.base, self.quote)
     }
 }
 
 pub type OrderID = String;
-pub type ClientOriginID = String;
+pub type ClientOrderID = String;
 pub type SeqID = u64;
 pub type MatchID = u64;
-pub type Currency = String; // USD, BTC, ETH
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Buy,
-    Sell,
-}
-
-// 枚举定义
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimeInForce {
-    GTK,
-    FOK,
-    IOC,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderType {
-    Limit,
-    Market,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderState {
-    New,             // The order is created
-    Rejected,        // The order is rejected due to invaild parameter, balance insufficient, etc.
-    PendingNew,      // The order is valid and waiting for further processing.
-    PartiallyFilled, // The order is partially done.
-    Filled,          // The order is completely done.
-    Cancelled,       // The order is cancelled by user.
-}
+pub type Symbol = String; // USD, BTC, ETH
+pub type Direction = oms::Direction;
+pub type TimeInForce = oms::TimeInForce;
+pub type OrderType = oms::OrderType;
+pub type OrderState = oms::OrderState;
 
 impl OrderState {
     pub fn is_final(&self) -> bool {
@@ -63,63 +56,75 @@ impl OrderState {
 // 订单结构体
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub(crate) order_id: OrderID,
-    pub(crate) account_id: u64,
-    pub(crate) client_origin_id: ClientOriginID,
-    pub(crate) seq_id: SeqID,
-    pub(crate) prev_seq_id: SeqID,
-    pub(crate) time_in_force: TimeInForce,
-    pub(crate) order_type: OrderType,
-    pub(crate) direction: Direction,
-    pub(crate) price: Decimal,
-    pub(crate) target_qty: Decimal, // taker目标成交数量
-    pub(crate) post_only: bool,     // post only
-    pub(crate) symbol: Symbol,
+    pub order_id: OrderID,
+    pub account_id: u64,
+    pub client_order_id: ClientOrderID,
+    pub seq_id: SeqID,
+    pub prev_seq_id: SeqID,
+    pub time_in_force: TimeInForce,
+    pub order_type: OrderType,
+    pub direction: Direction,
+    pub price: Decimal,
+    pub target_qty: Decimal, // taker目标成交数量
+    pub post_only: bool,     // post only
+    pub trade_pair: TradePair,
 }
 
 impl Order {
-    fn order_id(&self) -> &OrderID {
+    pub fn order_id(&self) -> &OrderID {
         &self.order_id
     }
-}
 
-#[derive(Debug, Clone)]
+    pub fn set_seq_id(&mut self, seq_id: SeqID) {
+        self.prev_seq_id = self.seq_id;
+        self.seq_id = seq_id;
+    }
+
+    pub fn symbol(&self) -> &TradePair {
+        &self.trade_pair
+    }
+
+    pub fn direction(&self) -> Direction {
+        self.direction
+    }
+
+    pub fn price(&self) -> Decimal {
+        self.price
+    }
+
+    pub fn quantity(&self) -> Decimal {
+        self.target_qty
+    }
+
+    pub fn client_order_id(&self) -> &ClientOrderID {
+        &self.client_order_id
+    }
+}
+#[derive(Debug, Clone, Getters)]
 pub struct OrderDetail {
+    #[getset(get = "pub")]
     original: Order,
+    #[getset(get = "pub", set = "pub")]
     current_state: OrderState,
+    #[getset(get = "pub", set = "pub")]
     filled_qty: Decimal,
+    #[getset(get = "pub", set = "pub")]
     last_seq_id: SeqID,
 }
 
 impl OrderDetail {
-    pub(crate) fn symbol(&self) -> &Symbol {
-        &self.original.symbol
-    }
-
-    pub(crate) fn direction(&self) -> Direction {
-        self.original.direction
-    }
-
-    pub(crate) fn price(&self) -> Decimal {
-        self.original.price
-    }
-
-    pub(crate) fn quantity(&self) -> Decimal {
-        self.original.target_qty
-    }
-
-    pub(crate) fn order_id(&self) -> &OrderID {
-        &self.original.order_id
-    }
-
-    pub(crate) fn client_order_id(&self) -> &ClientOriginID {
-        &self.original.client_origin_id
+    pub fn new(order: &Order) -> Self {
+        OrderDetail {
+            original: order.clone(),
+            current_state: OrderState::New,
+            filled_qty: Decimal::new(0, 0),
+            last_seq_id: 0,
+        }
     }
 }
-
 // 撮合结果结构体
 #[derive(Debug, Clone)]
-pub(crate) struct MatchRecord {
+pub struct MatchRecord {
     pub seq_id: SeqID,
     pub prev_seq_id: SeqID,
     pub match_id: MatchID,
@@ -135,31 +140,37 @@ pub(crate) struct MatchRecord {
     pub maker_state: OrderState,
     pub is_taker_fulfilled: bool,
     pub is_maker_fulfilled: bool,
-    pub symbol: Symbol,
+    pub trade_pair: TradePair,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct MatchResult {
+pub struct MatchResult {
     pub action: BizAction,
     pub fill_result: Option<FillOrderResult>, // Some(_) if action == FillOrder
     pub replace_result: Option<ReplaceOrderResult>, // Some(_) if action == ReplaceOrder
     pub cancel_result: Option<CancelOrderResult>, // Some(_) if action == CancelOrder
 }
 
+impl MatchResult {
+    pub fn get_fill_result(&self) -> Option<&FillOrderResult> {
+        self.fill_result.as_ref()
+    }
+}
+
 #[derive(Debug, Clone)]
-pub(crate) struct FillOrderResult {
+pub struct FillOrderResult {
     pub original_order: Order,
-    pub symbol: Symbol,
+    pub trade_pair: TradePair,
     pub results: Vec<MatchRecord>,
     pub order_state: OrderState,
     pub total_filled_qty: Decimal,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReplaceOrderResult {
+pub struct ReplaceOrderResult {
     pub is_replace_success: bool,
     pub err_msg: Option<String>,
-    pub symbol: Symbol,
+    pub trade_pair: TradePair,
     pub direction: Direction,
     pub order_id: OrderID,
     pub account_id: u64,
@@ -169,10 +180,10 @@ pub(crate) struct ReplaceOrderResult {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CancelOrderResult {
+pub struct CancelOrderResult {
     pub is_cancel_success: bool,
     pub err_msg: Option<String>,
-    pub symbol: Symbol,
+    pub trade_pair: TradePair,
     pub direction: Direction,
     pub order_id: OrderID,
     pub account_id: u64,

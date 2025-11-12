@@ -56,11 +56,18 @@ enum BizAction{
     ReplaceOrder = 5;
     CancelOrder = 6;
     FillOrder = 7;
+
+    // 100起步是内部控制指令
+}
+
+message TradePair{
+    string base = 1;   // 基础币种
+    string quote = 2;  // 计价币种
 }
 
 message Order{
     string order_id = 1; 
-    string symbol = 2; 
+    TradePair trade_pair = 2; 
     int32 direction = 3;        // 对应Direction枚举
     int32 time_in_force = 4;    // 对应TimeInForce枚举
     int32 order_type = 5;   // 对应OrderType枚举
@@ -69,6 +76,10 @@ message Order{
     string create_time = 8; // us
     string client_order_id = 9; // 可选
     int32 stp_strategy = 10; // 对应STPStrategy枚举
+    uint64 account_id = 11; 
+    bool post_only = 12; // true表示只挂单不吃单
+    uint64 seq_id = 13; // 创建订单时初始化，此后不变
+    uint64 prev_seq_id = 14;
 }
 
 
@@ -78,6 +89,20 @@ message OrderDetail{
     string filled_quantity = 3;
     uint64 last_seq_id = 4;
     uint64 update_time = 5; // us
+}
+
+message AdminCmd{
+
+}
+
+message TradeCmd{
+    uint64 seq_id = 1;
+    uint64 prev_seq_id = 2;
+    int32 biz_action = 3; // 对应BizAction枚举
+    PlaceOrderReq place_order_req = 4; // biz_action为PlaceOrder时有效
+    CancelOrderReq cancel_order_req = 5; // biz_action为CancelOrder时有效
+
+    AdminCmd admin_cmd = 10; // biz_action >=100及以上时有效
 }
 
 // 撮合结果
@@ -133,29 +158,22 @@ message ReplaceOrderCmd{
 
 // ======================================== RPC类
 message PlaceOrderReq{
-    uint64 seq_id = 1; 
-    uint64 prev_seq_id = 2;
-    Order order = 3;
-    uint64 account_id = 4;
+    Order order = 1;
 }
 
 message PlaceOrderRsp{
 }
 
 message ReplaceOrderReq{    
-    uint64 seq_id = 1; 
-    uint64 prev_seq_id = 2;
-    ReplaceOrderCmd cmd = 3;
+    ReplaceOrderCmd cmd = 1;
 }
 
 message ReplaceOrderRsp{
 }
 
 message CancelOrderReq{
-    uint64 seq_id = 1; 
-    uint64 prev_seq_id = 2;
-    string order_id = 3;
-    uint64 account_id = 4;
+    string order_id = 1;
+    uint64 account_id = 2;
 }
 
 message CancelOrderRsp{
@@ -187,8 +205,6 @@ message GetBalanceRsp{
 // ================================ 业务类
 service OMSService {
     rpc PlaceOrder(PlaceOrderReq) returns (PlaceOrderRsp);
-
-    rpc ReplaceOrder(ReplaceOrderReq) returns (ReplaceOrderRsp);
 
     rpc CancelOrder(CancelOrderReq) returns (CancelOrderRsp);
 }

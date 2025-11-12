@@ -1,10 +1,20 @@
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TradePair {
+    /// 基础币种
+    #[prost(string, tag = "1")]
+    pub base: ::prost::alloc::string::String,
+    /// 计价币种
+    #[prost(string, tag = "2")]
+    pub quote: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Order {
     #[prost(string, tag = "1")]
     pub order_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub symbol: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub trade_pair: ::core::option::Option<TradePair>,
     /// 对应Direction枚举
     #[prost(int32, tag = "3")]
     pub direction: i32,
@@ -27,6 +37,16 @@ pub struct Order {
     /// 对应STPStrategy枚举
     #[prost(int32, tag = "10")]
     pub stp_strategy: i32,
+    #[prost(uint64, tag = "11")]
+    pub account_id: u64,
+    /// true表示只挂单不吃单
+    #[prost(bool, tag = "12")]
+    pub post_only: bool,
+    /// 创建订单时初始化，此后不变
+    #[prost(uint64, tag = "13")]
+    pub seq_id: u64,
+    #[prost(uint64, tag = "14")]
+    pub prev_seq_id: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -43,6 +63,29 @@ pub struct OrderDetail {
     /// us
     #[prost(uint64, tag = "5")]
     pub update_time: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AdminCmd {}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TradeCmd {
+    #[prost(uint64, tag = "1")]
+    pub seq_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub prev_seq_id: u64,
+    /// 对应BizAction枚举
+    #[prost(int32, tag = "3")]
+    pub biz_action: i32,
+    /// biz_action为PlaceOrder时有效
+    #[prost(message, optional, tag = "4")]
+    pub place_order_req: ::core::option::Option<PlaceOrderReq>,
+    /// biz_action为CancelOrder时有效
+    #[prost(message, optional, tag = "5")]
+    pub cancel_order_req: ::core::option::Option<CancelOrderReq>,
+    /// biz_action >=100及以上时有效
+    #[prost(message, optional, tag = "10")]
+    pub admin_cmd: ::core::option::Option<AdminCmd>,
 }
 /// 撮合结果
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -121,14 +164,8 @@ pub struct ReplaceOrderCmd {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaceOrderReq {
-    #[prost(uint64, tag = "1")]
-    pub seq_id: u64,
-    #[prost(uint64, tag = "2")]
-    pub prev_seq_id: u64,
-    #[prost(message, optional, tag = "3")]
+    #[prost(message, optional, tag = "1")]
     pub order: ::core::option::Option<Order>,
-    #[prost(uint64, tag = "4")]
-    pub account_id: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -136,11 +173,7 @@ pub struct PlaceOrderRsp {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReplaceOrderReq {
-    #[prost(uint64, tag = "1")]
-    pub seq_id: u64,
-    #[prost(uint64, tag = "2")]
-    pub prev_seq_id: u64,
-    #[prost(message, optional, tag = "3")]
+    #[prost(message, optional, tag = "1")]
     pub cmd: ::core::option::Option<ReplaceOrderCmd>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -149,13 +182,9 @@ pub struct ReplaceOrderRsp {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelOrderReq {
-    #[prost(uint64, tag = "1")]
-    pub seq_id: u64,
-    #[prost(uint64, tag = "2")]
-    pub prev_seq_id: u64,
-    #[prost(string, tag = "3")]
+    #[prost(string, tag = "1")]
     pub order_id: ::prost::alloc::string::String,
-    #[prost(uint64, tag = "4")]
+    #[prost(uint64, tag = "2")]
     pub account_id: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -543,31 +572,6 @@ pub mod oms_service_client {
             );
             let mut req = request.into_request();
             req.extensions_mut().insert(GrpcMethod::new("oms.OMSService", "PlaceOrder"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn replace_order(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ReplaceOrderReq>,
-        ) -> std::result::Result<
-            tonic::Response<super::ReplaceOrderRsp>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/oms.OMSService/ReplaceOrder",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("oms.OMSService", "ReplaceOrder"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn cancel_order(
@@ -958,10 +962,6 @@ pub mod oms_service_server {
             &self,
             request: tonic::Request<super::PlaceOrderReq>,
         ) -> std::result::Result<tonic::Response<super::PlaceOrderRsp>, tonic::Status>;
-        async fn replace_order(
-            &self,
-            request: tonic::Request<super::ReplaceOrderReq>,
-        ) -> std::result::Result<tonic::Response<super::ReplaceOrderRsp>, tonic::Status>;
         async fn cancel_order(
             &self,
             request: tonic::Request<super::CancelOrderReq>,
@@ -1074,52 +1074,6 @@ pub mod oms_service_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = PlaceOrderSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/oms.OMSService/ReplaceOrder" => {
-                    #[allow(non_camel_case_types)]
-                    struct ReplaceOrderSvc<T: OmsService>(pub Arc<T>);
-                    impl<
-                        T: OmsService,
-                    > tonic::server::UnaryService<super::ReplaceOrderReq>
-                    for ReplaceOrderSvc<T> {
-                        type Response = super::ReplaceOrderRsp;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::ReplaceOrderReq>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).replace_order(request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let inner = inner.0;
-                        let method = ReplaceOrderSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

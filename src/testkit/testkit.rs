@@ -17,16 +17,16 @@ pub fn new_limit_order(
     Order {
         order_id: order_id.to_string(),
         account_id,
-        client_origin_id: format!("CLIENT_{}", order_id),
+        client_order_id: format!("CLIENT_{}", order_id),
         seq_id: 1,
         prev_seq_id: 0,
-        time_in_force: TimeInForce::GTK,
+        time_in_force: TimeInForce::Gtk,
         order_type: OrderType::Limit,
         direction,
         price,
         target_qty: qty,
         post_only: false,
-        symbol: Symbol {
+        trade_pair: TradePair {
             base: "BTC".to_string(),
             quote: "USDT".to_string(),
         },
@@ -35,7 +35,7 @@ pub fn new_limit_order(
 
 /// 模拟买单成交
 pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchResult {
-    let symbol = buy.symbol.clone();
+    let symbol = buy.trade_pair.clone();
     let mut match_records = vec![];
 
     // 第一次成交 0.5 BTC
@@ -55,12 +55,12 @@ pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchRes
         maker_state: OrderState::PartiallyFilled,
         is_taker_fulfilled: false,
         is_maker_fulfilled: false,
-        symbol: symbol.clone(),
+        trade_pair: symbol.clone(),
     });
 
     let fill_result = FillOrderResult {
         original_order: buy.clone(),
-        symbol: symbol.clone(),
+        trade_pair: symbol.clone(),
         results: match_records,
         order_state: OrderState::Filled,
         total_filled_qty: qty,
@@ -76,14 +76,14 @@ pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchRes
 
 // 模拟撤单
 pub fn cancel_buy_limit_order(buy: &Order) -> MatchResult {
-    let symbol = buy.symbol.clone();
+    let symbol = buy.trade_pair.clone();
     let cancel_result = CancelOrderResult {
         is_cancel_success: true,
         err_msg: None,
         direction: Direction::Buy,
         order_id: buy.order_id.clone(),
         account_id: buy.account_id,
-        symbol: symbol.clone(),
+        trade_pair: symbol.clone(),
         order_state: OrderState::Cancelled,
     };
     MatchResult {

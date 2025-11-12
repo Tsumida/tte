@@ -52,6 +52,7 @@ impl<T: PartialEq + Eq + PartialOrd + Ord> KeyExt<T> {
         match direction {
             Direction::Buy => KeyExt::Bid(key),
             Direction::Sell => KeyExt::Ask(key),
+            _ => panic!("invalid direction"), // 不能交叉对比
         }
     }
 }
@@ -232,6 +233,8 @@ impl OrderBook {
         }
     }
 
+    #[deprecated]
+    // seq_id由raft模块生成
     fn advance_seq_id(&mut self, seq_id: u64) {
         self.seq_id = max(self.seq_id, seq_id);
     }
@@ -268,7 +271,7 @@ impl OrderBook {
         Ok(MatchResult {
             action: BizAction::FillOrder,
             fill_result: Some(FillOrderResult {
-                symbol: order.symbol.clone(),
+                trade_pair: order.trade_pair.clone(),
                 original_order: order,
                 results: vec![],
                 order_state: OrderState::New,
@@ -339,7 +342,7 @@ impl OrderBook {
                         OrderState::PartiallyFilled
                     },
                     maker_account_id: maker.order.account_id,
-                    symbol: taker.order.symbol.clone(),
+                    trade_pair: taker.order.trade_pair.clone(),
                 });
                 new_match_id += 1;
                 total_filled_qty += filled_qty;
@@ -360,7 +363,7 @@ impl OrderBook {
         // 更新taker订单状态
         let mut put_taker_in_current_q = false;
         match taker.order.time_in_force {
-            TimeInForce::GTK => {
+            TimeInForce::Gtk => {
                 // 剩余部分进入订单簿
                 taker.match_state.filled_qty = total_filled_qty;
                 taker.match_state.remain_qty = taker.order.target_qty - total_filled_qty;
@@ -374,7 +377,7 @@ impl OrderBook {
                     put_taker_in_current_q = true;
                 }
             }
-            TimeInForce::FOK => {
+            TimeInForce::Fok => {
                 // 完全成交或部分成交，剩余部分取消
                 taker.match_state.filled_qty = total_filled_qty;
                 taker.order_state = if total_filled_qty >= taker.order.target_qty {
@@ -385,7 +388,7 @@ impl OrderBook {
                     OrderState::Cancelled
                 }
             }
-            TimeInForce::IOC => {
+            TimeInForce::Ioc => {
                 // 完全成交或取消
                 taker.match_state.filled_qty = total_filled_qty;
                 taker.order_state = if total_filled_qty >= taker.order.target_qty {
@@ -393,6 +396,9 @@ impl OrderBook {
                 } else {
                     OrderState::Cancelled
                 };
+            }
+            _ => {
+                return Err(OrderBookErr::new(err_code::ERR_OB_ORDER_TYPE_TIF));
             }
         }
 
@@ -433,7 +439,7 @@ impl OrderBook {
         Ok(MatchResult {
             action: BizAction::FillOrder,
             fill_result: Some(FillOrderResult {
-                symbol: taker.order.symbol.clone(),
+                trade_pair: taker.order.trade_pair.clone(),
                 original_order: taker.order,
                 results,
                 order_state: taker.order_state,
@@ -457,9 +463,9 @@ impl OrderBookRequestHandler for OrderBook {
         }
 
         match (order.order_type, order.time_in_force) {
-            (OrderType::Limit, TimeInForce::GTK)
-            | (OrderType::Market, TimeInForce::IOC)
-            | (OrderType::Market, TimeInForce::FOK) => self.match_basic_order_by_qty(MakerOrder {
+            (OrderType::Limit, TimeInForce::Gtk)
+            | (OrderType::Market, TimeInForce::Ioc)
+            | (OrderType::Market, TimeInForce::Fok) => self.match_basic_order_by_qty(MakerOrder {
                 order: order,
                 match_state: MatchState {
                     remain_qty: Decimal::ZERO, // 作为taker，为0
@@ -545,7 +551,7 @@ impl std::fmt::Display for OrderBookErr {
 #[cfg(test)]
 mod test {
     use crate::common::types::{
-        Direction, Order, OrderID, OrderState, OrderType, Symbol, TimeInForce,
+        Direction, Order, OrderID, OrderState, OrderType, TimeInForce, TradePair,
     };
     use crate::match_engine::orderbook::{
         KeyExt, MatchResult, OrderBook, OrderBookErr, OrderBookKey, OrderBookRequestHandler,
@@ -562,7 +568,7 @@ mod test {
         qty: f64,
     ) {
         let order = Order {
-            client_origin_id: String::new(),
+            client_order_id: String::new(),
             post_only: true, // essential
             account_id: account_id,
             order_id: OrderID::new(),
@@ -570,10 +576,10 @@ mod test {
             prev_seq_id: ob.seq_id,
             direction: direction,
             order_type: OrderType::Limit,
-            time_in_force: TimeInForce::GTK,
+            time_in_force: TimeInForce::Gtk,
             price: Decimal::from_f64(price).unwrap(),
             target_qty: Decimal::from_f64(qty).unwrap(),
-            symbol: Symbol {
+            trade_pair: TradePair {
                 base: "BTC".to_string(),
                 quote: "USD".to_string(),
             },
@@ -589,7 +595,7 @@ mod test {
         qty: f64,
     ) -> Result<MatchResult, OrderBookErr> {
         let order = Order {
-            client_origin_id: String::new(),
+            client_order_id: String::new(),
             post_only: false,
             order_id: OrderID::new(),
             account_id: account_id,
@@ -597,10 +603,10 @@ mod test {
             prev_seq_id: ob.seq_id,
             direction: direction,
             order_type: OrderType::Limit,
-            time_in_force: TimeInForce::GTK,
+            time_in_force: TimeInForce::Gtk,
             price: Decimal::from_f64(price).unwrap(),
             target_qty: Decimal::from_f64(qty).unwrap(),
-            symbol: Symbol {
+            trade_pair: TradePair {
                 base: "BTC".to_string(),
                 quote: "USD".to_string(),
             },

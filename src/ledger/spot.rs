@@ -10,7 +10,10 @@ use std::collections::{BTreeMap, HashMap};
 use rust_decimal::Decimal;
 
 use crate::{
-    common::types::{Currency, Direction, MatchRecord, MatchResult, Order, SeqID},
+    common::{
+        err_code::{self, ERR_INPOSSIBLE_STATE, TradeEngineErr},
+        types::{Direction, MatchRecord, MatchResult, Order, SeqID, Symbol},
+    },
     pbcode::oms,
 };
 
@@ -22,7 +25,7 @@ pub trait SpotLedgerRPCHandler {
     ) -> Result<SpotChangeResult, SpotLedgerErr>;
 }
 
-pub(crate) trait SpotLedgerMatchResultConsumer {
+pub trait SpotLedgerMatchResultConsumer {
     fn fill_order(
         &mut self,
         match_record: &MatchRecord,
@@ -37,13 +40,13 @@ pub(crate) trait SpotLedgerMatchResultConsumer {
 #[derive(Debug, Clone)]
 pub struct Spot {
     account_id: u64,
-    currency: Currency,
+    currency: Symbol,
     deposit: Decimal,
     frozen: Decimal,
 }
 
 impl Spot {
-    pub fn new(account_id: u64, currency: Currency) -> Self {
+    pub fn new(account_id: u64, currency: Symbol) -> Self {
         Spot {
             account_id,
             currency,
@@ -76,7 +79,7 @@ pub struct SpotChangeResult {
 pub struct FrozenReceipt {
     frozen_id: String, // 对应order_id, withdraw_id, transfer_id等
     account_id: u64,
-    currency: Currency,
+    currency: Symbol,
     remain_frozen: Decimal,
     target_frozen: Decimal, // 初始冻结额度, 在下单、改单时更新。
 }
@@ -109,10 +112,10 @@ trait SingleCurrencyTxUpdater {
 impl SingleCurrencyTxUpdater for SingleCurrencyTx {
     fn add_deposit(&mut self, amount: Decimal) -> Result<(), SpotLedgerErr> {
         if self.spot.is_none() {
-            return Err(SpotLedgerErr {
-                code: 2,
-                msg: "Spot is None when adding deposit".to_string(),
-            });
+            return Err(SpotLedgerErr::new(
+                err_code::ERR_INPOSSIBLE_STATE,
+                "Spot is None when adding deposit",
+            ));
         }
         self.spot.as_mut().unwrap().deposit += amount;
         Ok(())
@@ -120,20 +123,17 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
 
     fn sub_deposit(&mut self, amount: Decimal) -> Result<(), SpotLedgerErr> {
         if self.spot.is_none() {
-            return Err(SpotLedgerErr {
-                code: 2,
-                msg: "Spot is None when subtracting deposit".to_string(),
-            });
+            return Err(SpotLedgerErr::new(
+                err_code::ERR_INPOSSIBLE_STATE,
+                "Spot is None when subtracting deposit",
+            ));
         }
         let spot = self.spot.as_mut().unwrap();
         if spot.deposit < amount {
-            return Err(SpotLedgerErr {
-                code: 1,
-                msg: format!(
-                    "Insufficient balance to sub for account_id {}, currency {}",
-                    spot.account_id, spot.currency
-                ),
-            });
+            return Err(SpotLedgerErr::new(
+                err_code::ERR_LEDGER_INSUFFICIENT_BALANCE,
+                "Insufficient balance to subtract deposit",
+            ));
         }
         spot.deposit -= amount;
         Ok(())
@@ -141,21 +141,18 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
 
     fn freeze(&mut self, frozen_id: &str, amount: Decimal) -> Result<(), SpotLedgerErr> {
         if self.frozen_receipt.is_some() {
-            return Err(SpotLedgerErr {
-                code: 3,
-                msg: "FrozenReceipt already exists for this transaction".to_string(),
-            });
+            return Err(SpotLedgerErr::new(
+                err_code::ERR_INPOSSIBLE_STATE,
+                "FrozenReceipt already exists when freezing",
+            ));
         }
 
         if let Some(spot) = self.spot.as_mut() {
             if spot.deposit - spot.frozen < amount {
-                return Err(SpotLedgerErr {
-                    code: 1,
-                    msg: format!(
-                        "Insufficient balance to freeze for account_id {}, currency {},current_deposit {}, current_frozen {}, freeze_amount {}",
-                        spot.account_id, spot.currency, spot.deposit, spot.frozen, amount
-                    ),
-                });
+                return Err(SpotLedgerErr::new(
+                    err_code::ERR_LEDGER_INSUFFICIENT_BALANCE,
+                    "Insufficient available balance to freeze",
+                ));
             }
             spot.frozen += amount;
         }
@@ -172,32 +169,26 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
     fn release_frozen(&mut self, amount: Decimal) -> Result<(), SpotLedgerErr> {
         if let Some(receipt) = &mut self.frozen_receipt {
             if receipt.remain_frozen < amount {
-                return Err(SpotLedgerErr {
-                    code: 1,
-                    msg: format!(
-                        "Insufficient frozen amount to release for frozen_id {}",
-                        receipt.frozen_id
-                    ),
-                });
+                return Err(SpotLedgerErr::new(
+                    err_code::ERR_OMS_PRICE_OUT_OF_RANGE,
+                    "Release amount exceeds remaining frozen amount",
+                ));
             }
             let spot = self.spot.as_mut().unwrap();
             if spot.frozen < amount {
-                return Err(SpotLedgerErr {
-                    code: 2,
-                    msg: format!(
-                        "Spot frozen amount less than release amount for account_id {}, currency {}",
-                        spot.account_id, spot.currency
-                    ),
-                });
+                return Err(SpotLedgerErr::new(
+                    err_code::ERR_INPOSSIBLE_STATE,
+                    "Insufficient frozen amount to release",
+                ));
             }
             spot.frozen -= amount;
             receipt.remain_frozen -= amount;
             Ok(())
         } else {
-            Err(SpotLedgerErr {
-                code: 2,
-                msg: "No frozen receipt to release frozen amount".to_string(),
-            })
+            Err(SpotLedgerErr::new(
+                ERR_INPOSSIBLE_STATE,
+                "No FrozenReceipt to release from",
+            ))
         }
     }
 
@@ -206,13 +197,10 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
             let amount = receipt.remain_frozen;
             let spot = self.spot.as_mut().unwrap();
             if spot.frozen < amount {
-                return Err(SpotLedgerErr {
-                    code: 2,
-                    msg: format!(
-                        "Spot frozen amount less than release all amount for account_id {}, currency {}",
-                        spot.account_id, spot.currency
-                    ),
-                });
+                return Err(SpotLedgerErr::new(
+                    err_code::ERR_INPOSSIBLE_STATE,
+                    "Insufficient frozen amount to release all",
+                ));
             }
             spot.frozen -= amount;
         }
@@ -221,8 +209,9 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct SpotLedger {
-    spots: BTreeMap<u64, BTreeMap<Currency, Spot>>, // account_id -> currency -> Spot
+    spots: BTreeMap<u64, BTreeMap<Symbol, Spot>>, // account_id -> currency -> Spot
     order_frozen_receipts: BTreeMap<String, FrozenReceipt>, // frozen_id -> FrozenReceipt
     last_seq_id: SeqID,
     last_spot_id: u64, // 目前是sequencer commit后串行调用， 因此一个spot_id足够
@@ -334,7 +323,7 @@ impl SpotLedger {
         self.last_spot_id
     }
 
-    fn get_all_balances(&self, account_id: u64) -> HashMap<&Currency, &Spot> {
+    fn get_all_balances(&self, account_id: u64) -> HashMap<&Symbol, &Spot> {
         match self.spots.get(&account_id) {
             Some(currency_map) => currency_map.iter().collect(),
             None => HashMap::new(),
@@ -371,22 +360,22 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
         let maker_order_id = match_result.maker_order_id.clone();
         let mut taker_base_tx = self.get_spot_and_frozen(
             match_result.taker_account_id,
-            &match_result.symbol.base,
+            &match_result.trade_pair.base,
             &taker_order_id,
         );
         let mut taker_quote_tx = self.get_spot_and_frozen(
             match_result.taker_account_id,
-            &match_result.symbol.quote,
+            &match_result.trade_pair.quote,
             &taker_order_id,
         );
         let mut maker_base_tx = self.get_spot_and_frozen(
             match_result.maker_account_id,
-            &match_result.symbol.base,
+            &match_result.trade_pair.base,
             &maker_order_id,
         );
         let mut maker_quote_tx = self.get_spot_and_frozen(
             match_result.maker_account_id,
-            &match_result.symbol.quote,
+            &match_result.trade_pair.quote,
             &maker_order_id,
         );
 
@@ -396,10 +385,10 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
             || maker_base_tx.spot.is_none()
             || maker_quote_tx.spot.is_none()
         {
-            return Err(SpotLedgerErr {
-                code: 1,
-                msg: "One of the spots is None in fill_order".to_string(),
-            });
+            return Err(SpotLedgerErr::new(
+                err_code::ERR_INPOSSIBLE_STATE,
+                "Spot is None in fill_order",
+            ));
         }
 
         let before = [
@@ -430,6 +419,10 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
                 maker_quote_tx.sub_deposit(match_result.price * match_result.qty)?;
                 maker_quote_tx.release_frozen(match_result.price * match_result.qty)?;
             }
+            _ => Err(SpotLedgerErr::new(
+                err_code::ERR_INPOSSIBLE_STATE,
+                "Unknown direction in fill_order",
+            ))?,
         }
 
         let after = [taker_base_tx, taker_quote_tx, maker_base_tx, maker_quote_tx];
@@ -446,32 +439,38 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
         &mut self,
         match_result: &MatchResult,
     ) -> Result<SpotChangeResult, SpotLedgerErr> {
-        let result = match_result.cancel_result.as_ref().ok_or(SpotLedgerErr {
-            code: 3,
-            msg: "No cancel_result in MatchResult".to_string(),
-        })?;
+        let result = match_result
+            .cancel_result
+            .as_ref()
+            .ok_or(SpotLedgerErr::new(
+                err_code::ERR_INPOSSIBLE_STATE,
+                "CancelResult is None in cancel_order",
+            ))?;
 
         if !result.is_cancel_success {
-            return Err(SpotLedgerErr {
-                code: 5,
-                msg: format!(
-                    "Cancel order failed: {}",
-                    result.err_msg.clone().unwrap_or_default()
-                ),
-            });
+            return Err(SpotLedgerErr::new(
+                err_code::ERR_INPOSSIBLE_STATE,
+                "Cancel order failed",
+            ));
         }
 
         let currency: &str = match result.direction {
-            Direction::Buy => result.symbol.quote.as_ref(),
-            Direction::Sell => result.symbol.base.as_ref(),
+            Direction::Buy => result.trade_pair.quote.as_ref(),
+            Direction::Sell => result.trade_pair.base.as_ref(),
+            _ => {
+                return Err(SpotLedgerErr::new(
+                    err_code::ERR_INPOSSIBLE_STATE,
+                    "Unknown direction",
+                ));
+            }
         };
         let spot_id = self.advance_spot_id();
         let mut tx = self.get_spot_and_frozen(result.account_id, currency, &result.order_id);
         if tx.spot.is_none() {
-            return Err(SpotLedgerErr {
-                code: 4,
-                msg: "Spot is None in cancel_order".to_string(),
-            });
+            return Err(SpotLedgerErr::new(
+                err_code::ERR_INPOSSIBLE_STATE,
+                "Spot is None in cancel_order",
+            ));
         }
         let before = tx.clone();
         tx.release_all()?;
@@ -488,8 +487,14 @@ impl SpotLedgerRPCHandler for SpotLedger {
         // query: 从self获取最新状态, 构建SingleCurrencyTx
         let spot_id = self.advance_spot_id();
         let currency = match order.direction {
-            Direction::Buy => order.symbol.quote.as_ref(),
-            Direction::Sell => order.symbol.base.as_ref(),
+            Direction::Buy => order.trade_pair.quote.as_ref(),
+            Direction::Sell => order.trade_pair.base.as_ref(),
+            _ => {
+                return Err(SpotLedgerErr::new(
+                    err_code::ERR_INPOSSIBLE_STATE,
+                    "Unknown directionr",
+                ));
+            }
         };
         let before = SingleCurrencyTx {
             spot_id: spot_id,
@@ -504,8 +509,29 @@ impl SpotLedgerRPCHandler for SpotLedger {
 
 #[derive(Debug, Clone)]
 pub struct SpotLedgerErr {
+    module: &'static str,
     code: i32,
-    msg: String,
+    msg: &'static str,
+}
+
+impl SpotLedgerErr {
+    fn new(code: i32, msg: &'static str) -> Self {
+        SpotLedgerErr {
+            module: "SpotLedger",
+            code,
+            msg,
+        }
+    }
+}
+
+impl TradeEngineErr for SpotLedgerErr {
+    fn code(&self) -> i32 {
+        self.code
+    }
+
+    fn module(&self) -> &'static str {
+        self.module
+    }
 }
 
 impl std::fmt::Display for SpotLedgerErr {
@@ -559,8 +585,11 @@ mod tests {
             let amount = match order.direction {
                 Direction::Buy => order.price * order.target_qty,
                 Direction::Sell => order.target_qty,
+                _ => {
+                    panic!()
+                }
             };
-            log::info!("Placing order: {:?}", amount.to_string());
+            tracing::info!("Placing order: {:?}", amount.to_string());
             let _ = ledger.place_order(order.clone(), amount).unwrap();
         }
 
@@ -613,8 +642,11 @@ mod tests {
             let amount = match order.direction {
                 Direction::Buy => order.price * order.target_qty,
                 Direction::Sell => order.target_qty,
+                _ => {
+                    panic!()
+                }
             };
-            log::info!("Placing order: {:?}", amount.to_string());
+            tracing::info!("Placing order: {:?}", amount.to_string());
             let _ = ledger.place_order(order.clone(), amount).unwrap();
         }
 
