@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::sync::{Arc, atomic::AtomicU64};
+use std::sync::atomic::AtomicU64;
 
 use tokio::sync::mpsc;
 // use tokio::sync::oneshot;
@@ -67,17 +67,22 @@ where
     }
 
     pub async fn run(mut self) {
+        tracing::info!("sequencer up");
         tokio::spawn(async move {
             while let Some(mut cmd) = self.submit_recv.recv().await {
-                tracing::info!("sequencer: received cmd");
-
                 let prev_seq_id = self.get_seq_id();
                 let seq_id = self.advance_seq_id();
                 cmd.set_seq_id(seq_id, prev_seq_id);
-
+                tracing::info!(
+                    "sequencer: received cmd, seq_id={}, prev_seq_id={}",
+                    seq_id,
+                    prev_seq_id
+                );
                 // todo: batch process
                 _ = self.commit_send.send(cmd).await;
+                tracing::info!("sequencer: cmd seq_id={} sent to commit", seq_id);
             }
+            tracing::info!("sequencer down");
         });
     }
 }

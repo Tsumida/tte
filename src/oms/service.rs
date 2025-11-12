@@ -1,4 +1,4 @@
-//!
+#![allow(dead_code)]
 
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use crate::{
     oms::oms::{OMS, OrderBuilder},
     pbcode::oms,
 };
-use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::instrument;
 
 // type OMSView = OMS;
@@ -25,65 +25,9 @@ impl SequenceSetter for CmdExt {
 }
 
 #[derive(Debug)]
-struct TradeSystem {
+pub struct TradeSystem {
     oms_view: Arc<RwLock<OMS>>, // read only
     submit_send: mpsc::Sender<CmdExt>,
-}
-
-struct ApplyThread {
-    oms: Arc<RwLock<OMS>>,
-    commit_recv: mpsc::Receiver<CmdExt>,
-}
-
-impl ApplyThread {
-    async fn run(&mut self) {
-        let batch_apply_size = 16;
-        let mut batch = Vec::with_capacity(batch_apply_size);
-        let mut results = Vec::with_capacity(batch_apply_size);
-
-        // try get a batch or update right now
-        while let Some(cmd) = self.commit_recv.recv().await {
-            batch.push(cmd);
-            while batch.len() < batch_apply_size {
-                match self.commit_recv.try_recv() {
-                    Ok(cmd) => batch.push(cmd),
-                    Err(_) => break,
-                }
-            }
-            let mut oms = self.oms.write().await;
-            let mut informer = Vec::with_capacity(batch.len());
-            for cmd_ext in batch.drain(..) {
-                let cmd = cmd_ext.cmd;
-                // Process each cmd with the oms instance
-                results.push(oms.process_trade_cmd(cmd.clone()));
-                informer.push((cmd.clone(), cmd_ext.rsp_chan));
-            }
-
-            // response thread
-            tokio::spawn(async move {
-                for (cmd, ch) in informer.into_iter() {
-                    if ch.is_none() {
-                        continue;
-                    }
-                    if let Err(_) = ch.unwrap().send(Informer {
-                        seq_id: cmd.seq_id,
-                        prev_seq_id: cmd.prev_seq_id,
-                        is_success: true,
-                        err: None,
-                    }) {
-                        tracing::error!(
-                            "response channel closed for action {:?} seq_id {}",
-                            cmd.biz_action,
-                            cmd.seq_id
-                        );
-                    }
-                }
-            });
-
-            batch.clear();
-            results.clear();
-        }
-    }
 }
 
 impl TradeSystem {
@@ -131,10 +75,6 @@ impl oms::oms_service_server::OmsService for TradeSystem {
             return Err(tonic::Status::invalid_argument("Order detail is missing"));
         }
 
-        if place_order_req.order.as_ref().unwrap().order_id.is_empty() {
-            return Err(tonic::Status::invalid_argument("Order ID is missing"));
-        }
-
         let ord = place_order_req.order.as_ref().unwrap();
         let order = OrderBuilder::new()
             .build(ord.clone())
@@ -142,13 +82,12 @@ impl oms::oms_service_server::OmsService for TradeSystem {
 
         let oms = self.oms_view.read().await;
         _ = oms.check_place_order(&order).map_err(|e| {
+            tracing::warn!("Failed to check place order: {}", e);
             tonic::Status::failed_precondition(format!("Precondition failed: {}", e))
         })?;
+        drop(oms); // critical: avoid deadlock
 
         // todo, write order into sequencer channel and wait for response.
-        // let cmd = TradeCmdExt::place_order_cmd(place_order_req.clone(), rsp_chan);
-
-        // delay = 1*consensus_delay
         let (cmd, rsp_recv) = CmdWrapper::place_order_cmd(place_order_req.clone());
         let start_time = std::time::Instant::now();
         let _ =
@@ -182,6 +121,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         let order = oms
             .get_order_detail(cancel_order_req.account_id, &cancel_order_req.order_id)
             .ok_or_else(|| tonic::Status::not_found("Order not found"))?;
+
         match order.current_state() {
             // ideompotent
             types::OrderState::Cancelled => {
@@ -203,6 +143,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
                 ));
             }
         }
+        drop(oms); // critical: avoid deadlock
 
         let (cmd, rsp_recv) = CmdWrapper::cancel_order_cmd(cancel_order_req.clone());
         let start_time = std::time::Instant::now();
@@ -221,6 +162,68 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         );
 
         Ok(tonic::Response::new(oms::CancelOrderRsp {}))
+    }
+}
+
+struct ApplyThread {
+    oms: Arc<RwLock<OMS>>,
+    commit_recv: mpsc::Receiver<CmdExt>,
+}
+
+impl ApplyThread {
+    async fn run(&mut self) {
+        let batch_apply_size = 16;
+        let mut batch = Vec::with_capacity(batch_apply_size);
+        let mut results = Vec::with_capacity(batch_apply_size);
+
+        tracing::info!("ApplyThread started");
+        // try get a batch or update right now
+        while let Some(cmd) = self.commit_recv.recv().await {
+            batch.push(cmd);
+            while batch.len() < batch_apply_size {
+                match self.commit_recv.try_recv() {
+                    Ok(cmd) => batch.push(cmd),
+                    Err(_) => break,
+                }
+            }
+
+            tracing::info!("ApplyThread processing batch of size {}", batch.len());
+
+            let mut oms = self.oms.write().await;
+            let mut informer = Vec::with_capacity(batch.len());
+            for cmd_ext in batch.drain(..) {
+                let cmd = cmd_ext.cmd;
+                // Process each cmd with the oms instance
+                results.push(oms.process_trade_cmd(cmd.clone()));
+                informer.push((cmd.clone(), cmd_ext.rsp_chan));
+            }
+            drop(oms); // critical: avoid deadlock
+
+            // response thread
+            tokio::spawn(async move {
+                for (cmd, ch) in informer.into_iter() {
+                    if ch.is_none() {
+                        continue;
+                    }
+                    if let Err(_) = ch.unwrap().send(Informer {
+                        seq_id: cmd.seq_id,
+                        prev_seq_id: cmd.prev_seq_id,
+                        is_success: true,
+                        err: None,
+                    }) {
+                        tracing::error!(
+                            "response channel closed for action {:?} seq_id {}",
+                            cmd.biz_action,
+                            cmd.seq_id
+                        );
+                    }
+                }
+            });
+
+            batch.clear();
+            results.clear();
+        }
+        tracing::info!("ApplyThread stopped");
     }
 }
 

@@ -5,9 +5,11 @@
 #![allow(dead_code)]
 
 use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 
 use crate::common::err_code;
 use crate::common::err_code::TradeEngineErr;
+use crate::common::id::IDGenerator;
 use crate::common::types::*;
 use crate::ledger::spot;
 use crate::ledger::spot::SpotLedger;
@@ -30,7 +32,7 @@ struct AccountOrderList {
 struct SymbolMarketData {
     trade_pair: TradePair, // 交易对
     last_price: Decimal,   // 交易对最新成交价
-    config: oms::SymbolConfig,
+    config: oms::TradePairConfig,
     last_match_id: MatchID, // oms接受match_result, 用于过滤已处理的match_id
 }
 
@@ -48,6 +50,43 @@ pub struct OMSChangeResult {
 }
 
 impl OMS {
+    pub fn new() -> Self {
+        OMS {
+            active_orders: BTreeMap::new(),
+            ledger: SpotLedger::new(),
+            client_order_map: HashMap::new(),
+            last_seq_id: 0,
+            market_data: HashMap::new(),
+        }
+    }
+
+    pub fn with_init_ledger(&mut self, balances: Vec<(u64, &str, f64)>) -> &mut Self {
+        for (account_id, currency, amount) in balances {
+            self.ledger
+                .add_deposit(account_id, currency, Decimal::from_f64(amount).unwrap())
+                .unwrap();
+        }
+        self
+    }
+
+    pub fn with_market_data(
+        &mut self,
+        market_data: Vec<(TradePair, Decimal, oms::TradePairConfig)>,
+    ) -> &mut Self {
+        for (trade_pair, last_price, config) in market_data {
+            self.market_data.insert(
+                trade_pair.clone(),
+                SymbolMarketData {
+                    trade_pair,
+                    last_price,
+                    config,
+                    last_match_id: 0,
+                },
+            );
+        }
+        self
+    }
+
     pub fn process_trade_cmd(
         &mut self,
         cmd: Arc<oms::TradeCmd>,
@@ -114,10 +153,10 @@ impl OMS {
     }
 
     pub fn check_place_order(&self, order: &Order) -> Result<(), OMSErr> {
-        if let Some(config) = self.market_data.get(order.symbol()) {
+        if let Some(config) = self.market_data.get(order.trade_pair()) {
             self.check_symbol_trading(config)?;
-            self.check_price_in_range(order.price(), config)?;
-            self.check_qty(order.quantity(), config)?;
+            self.check_price_in_range(*order.price(), config)?;
+            self.check_qty(*order.target_qty(), config)?;
         } else {
             return Err(OMSErr::new(
                 err_code::ERR_OMS_PAIR_NOT_FOUND,
@@ -146,7 +185,7 @@ impl OMS {
     }
 
     fn check_symbol_trading(&self, market_config: &SymbolMarketData) -> Result<(), OMSErr> {
-        if market_config.config.state != oms::SymbolState::SymbolTrading as i32 {
+        if market_config.config.state != oms::TradePairState::TradingPair as i32 {
             return Err(OMSErr::new(
                 err_code::ERR_OMS_PAIR_NOT_TRADING,
                 "Symbol not trading",
@@ -200,16 +239,22 @@ impl OMS {
 
 pub type OMSSnapshot = OMS;
 
-pub(crate) struct OrderBuilder {}
+pub(crate) struct OrderBuilder {
+    create_order: bool,
+}
 
 impl OrderBuilder {
     pub fn new() -> Self {
-        OrderBuilder {}
+        OrderBuilder { create_order: true }
     }
 
     pub fn build(&mut self, order: oms::Order) -> Result<Order, OMSErr> {
         Ok(Order {
-            order_id: order.order_id.clone(),
+            order_id: if self.create_order {
+                IDGenerator::gen_order_id(order.account_id)
+            } else {
+                order.order_id
+            },
             client_order_id: order.client_order_id.clone(),
             account_id: order.account_id,
             trade_pair: TradePair::from(order.trade_pair.unwrap()),

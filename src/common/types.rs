@@ -10,6 +10,19 @@ pub struct TradePair {
     pub quote: String,
 }
 
+impl TradePair {
+    pub fn new(base: &str, quote: &str) -> Self {
+        TradePair {
+            base: base.to_string(),
+            quote: quote.to_string(),
+        }
+    }
+
+    fn pair(&self) -> String {
+        format!("{}{}", self.base, self.quote)
+    }
+}
+
 impl From<oms::TradePair> for TradePair {
     fn from(tp: oms::TradePair) -> Self {
         TradePair {
@@ -54,52 +67,34 @@ impl OrderState {
 }
 
 // 订单结构体
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Getters)]
 pub struct Order {
+    #[getset(get = "pub", set = "pub")]
     pub order_id: OrderID,
+    #[getset(get = "pub")]
     pub account_id: u64,
+    #[getset(get = "pub")]
     pub client_order_id: ClientOrderID,
+    #[getset(get = "pub")]
     pub seq_id: SeqID,
+    #[getset(get = "pub")]
     pub prev_seq_id: SeqID,
+    #[getset(get = "pub")]
     pub time_in_force: TimeInForce,
+    #[getset(get = "pub")]
     pub order_type: OrderType,
+    #[getset(get = "pub")]
     pub direction: Direction,
+    #[getset(get = "pub")]
     pub price: Decimal,
+    #[getset(get = "pub")]
     pub target_qty: Decimal, // taker目标成交数量
-    pub post_only: bool,     // post only
+    #[getset(get = "pub")]
+    pub post_only: bool, // post only
+    #[getset(get = "pub")]
     pub trade_pair: TradePair,
 }
 
-impl Order {
-    pub fn order_id(&self) -> &OrderID {
-        &self.order_id
-    }
-
-    pub fn set_seq_id(&mut self, seq_id: SeqID) {
-        self.prev_seq_id = self.seq_id;
-        self.seq_id = seq_id;
-    }
-
-    pub fn symbol(&self) -> &TradePair {
-        &self.trade_pair
-    }
-
-    pub fn direction(&self) -> Direction {
-        self.direction
-    }
-
-    pub fn price(&self) -> Decimal {
-        self.price
-    }
-
-    pub fn quantity(&self) -> Decimal {
-        self.target_qty
-    }
-
-    pub fn client_order_id(&self) -> &ClientOrderID {
-        &self.client_order_id
-    }
-}
 #[derive(Debug, Clone, Getters)]
 pub struct OrderDetail {
     #[getset(get = "pub")]

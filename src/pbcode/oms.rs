@@ -122,14 +122,14 @@ pub struct MatchResult {
 /// ======================================== 配置类
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SymbolConfig {
+pub struct TradePairConfig {
     #[prost(string, tag = "1")]
-    pub symbol: ::prost::alloc::string::String,
+    pub trade_pair: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub min_price_increment: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub min_quantity_increment: ::prost::alloc::string::String,
-    /// 对应SymbolState枚举
+    /// 对应TradePairState枚举
     #[prost(int32, tag = "4")]
     pub state: i32,
     /// 价格波动限制百分比，例如0.1表示10%
@@ -141,7 +141,7 @@ pub struct SymbolConfig {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LevelSnapshot {
     #[prost(string, tag = "1")]
-    pub symbol: ::prost::alloc::string::String,
+    pub trade_pair: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "2")]
     pub bids: ::prost::alloc::vec::Vec<Order>,
     #[prost(message, repeated, tag = "3")]
@@ -434,35 +434,35 @@ impl BizAction {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
-pub enum SymbolState {
-    UndefinedSymbolState = 0,
+pub enum TradePairState {
+    UndefinedPairState = 0,
     /// 正常交易
-    SymbolTrading = 1,
+    TradingPair = 1,
     /// 不可交易，但可以撤单
-    SymbolSuspended = 2,
+    SuspendedPair = 2,
     /// 新上线，暂不可交易
-    SymbolNew = 3,
+    NewPair = 3,
 }
-impl SymbolState {
+impl TradePairState {
     /// String value of the enum field names used in the ProtoBuf definition.
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            SymbolState::UndefinedSymbolState => "UndefinedSymbolState",
-            SymbolState::SymbolTrading => "SymbolTrading",
-            SymbolState::SymbolSuspended => "SymbolSuspended",
-            SymbolState::SymbolNew => "SymbolNew",
+            TradePairState::UndefinedPairState => "UndefinedPairState",
+            TradePairState::TradingPair => "TradingPair",
+            TradePairState::SuspendedPair => "SuspendedPair",
+            TradePairState::NewPair => "NewPair",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "UndefinedSymbolState" => Some(Self::UndefinedSymbolState),
-            "SymbolTrading" => Some(Self::SymbolTrading),
-            "SymbolSuspended" => Some(Self::SymbolSuspended),
-            "SymbolNew" => Some(Self::SymbolNew),
+            "UndefinedPairState" => Some(Self::UndefinedPairState),
+            "TradingPair" => Some(Self::TradingPair),
+            "SuspendedPair" => Some(Self::SuspendedPair),
+            "NewPair" => Some(Self::NewPair),
             _ => None,
         }
     }
@@ -470,8 +470,8 @@ impl SymbolState {
 /// Generated client implementations.
 pub mod oms_service_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     /// ================================ 业务类
     #[derive(Debug, Clone)]
     pub struct OmsServiceClient<T> {
@@ -511,14 +511,13 @@ pub mod oms_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    http::Request<tonic::body::BoxBody>,
+                    Response = http::Response<
+                        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    >,
                 >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
+                Into<StdError> + Send + Sync,
         {
             OmsServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -557,40 +556,31 @@ pub mod oms_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::PlaceOrderReq>,
         ) -> std::result::Result<tonic::Response<super::PlaceOrderRsp>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/oms.OMSService/PlaceOrder",
-            );
+            let path = http::uri::PathAndQuery::from_static("/oms.OMSService/PlaceOrder");
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new("oms.OMSService", "PlaceOrder"));
+            req.extensions_mut()
+                .insert(GrpcMethod::new("oms.OMSService", "PlaceOrder"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn cancel_order(
             &mut self,
             request: impl tonic::IntoRequest<super::CancelOrderReq>,
         ) -> std::result::Result<tonic::Response<super::CancelOrderRsp>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/oms.OMSService/CancelOrder",
-            );
+            let path = http::uri::PathAndQuery::from_static("/oms.OMSService/CancelOrder");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("oms.OMSService", "CancelOrder"));
@@ -601,8 +591,8 @@ pub mod oms_service_client {
 /// Generated client implementations.
 pub mod order_query_service_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     #[derive(Debug, Clone)]
     pub struct OrderQueryServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -641,14 +631,13 @@ pub mod order_query_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    http::Request<tonic::body::BoxBody>,
+                    Response = http::Response<
+                        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    >,
                 >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
+                Into<StdError> + Send + Sync,
         {
             OrderQueryServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -688,19 +677,15 @@ pub mod order_query_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::GetOrderDetailReq>,
         ) -> std::result::Result<tonic::Response<super::OrderDetail>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/oms.OrderQueryService/GetOrderDetail",
-            );
+            let path =
+                http::uri::PathAndQuery::from_static("/oms.OrderQueryService/GetOrderDetail");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("oms.OrderQueryService", "GetOrderDetail"));
@@ -711,8 +696,8 @@ pub mod order_query_service_client {
 /// Generated client implementations.
 pub mod account_query_service_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     #[derive(Debug, Clone)]
     pub struct AccountQueryServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -751,14 +736,13 @@ pub mod account_query_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    http::Request<tonic::body::BoxBody>,
+                    Response = http::Response<
+                        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    >,
                 >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
+                Into<StdError> + Send + Sync,
         {
             AccountQueryServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -797,19 +781,14 @@ pub mod account_query_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::GetBalanceReq>,
         ) -> std::result::Result<tonic::Response<super::GetBalanceRsp>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/oms.AccountQueryService/GetBalance",
-            );
+            let path = http::uri::PathAndQuery::from_static("/oms.AccountQueryService/GetBalance");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("oms.AccountQueryService", "GetBalance"));
@@ -820,8 +799,8 @@ pub mod account_query_service_client {
 /// Generated client implementations.
 pub mod oms_control_service_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     #[derive(Debug, Clone)]
     pub struct OmsControlServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -860,14 +839,13 @@ pub mod oms_control_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    http::Request<tonic::body::BoxBody>,
+                    Response = http::Response<
+                        <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    >,
                 >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
+                Into<StdError> + Send + Sync,
         {
             OmsControlServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -905,48 +883,39 @@ pub mod oms_control_service_client {
         pub async fn take_snapshot(
             &mut self,
             request: impl tonic::IntoRequest<super::TakeSnapshotReq>,
-        ) -> std::result::Result<
-            tonic::Response<super::TakeSnapshotRsp>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+        ) -> std::result::Result<tonic::Response<super::TakeSnapshotRsp>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/oms.OMSControlService/TakeSnapshot",
-            );
+            let path = http::uri::PathAndQuery::from_static("/oms.OMSControlService/TakeSnapshot");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("oms.OMSControlService", "TakeSnapshot"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn update_symbol_config(
+        pub async fn update_trade_pair_config(
             &mut self,
-            request: impl tonic::IntoRequest<super::SymbolConfig>,
+            request: impl tonic::IntoRequest<super::TradePairConfig>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::new(
+                    tonic::Code::Unknown,
+                    format!("Service was not ready: {}", e.into()),
+                )
+            })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/oms.OMSControlService/UpdateSymbolConfig",
+                "/oms.OMSControlService/UpdateTradePairConfig",
             );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("oms.OMSControlService", "UpdateSymbolConfig"));
+            req.extensions_mut().insert(GrpcMethod::new(
+                "oms.OMSControlService",
+                "UpdateTradePairConfig",
+            ));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -991,10 +960,7 @@ pub mod oms_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -1050,13 +1016,9 @@ pub mod oms_service_server {
                 "/oms.OMSService/PlaceOrder" => {
                     #[allow(non_camel_case_types)]
                     struct PlaceOrderSvc<T: OmsService>(pub Arc<T>);
-                    impl<T: OmsService> tonic::server::UnaryService<super::PlaceOrderReq>
-                    for PlaceOrderSvc<T> {
+                    impl<T: OmsService> tonic::server::UnaryService<super::PlaceOrderReq> for PlaceOrderSvc<T> {
                         type Response = super::PlaceOrderRsp;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::PlaceOrderReq>,
@@ -1092,23 +1054,15 @@ pub mod oms_service_server {
                 "/oms.OMSService/CancelOrder" => {
                     #[allow(non_camel_case_types)]
                     struct CancelOrderSvc<T: OmsService>(pub Arc<T>);
-                    impl<
-                        T: OmsService,
-                    > tonic::server::UnaryService<super::CancelOrderReq>
-                    for CancelOrderSvc<T> {
+                    impl<T: OmsService> tonic::server::UnaryService<super::CancelOrderReq> for CancelOrderSvc<T> {
                         type Response = super::CancelOrderRsp;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::CancelOrderReq>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).cancel_order(request).await
-                            };
+                            let fut = async move { (*inner).cancel_order(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -1135,18 +1089,14 @@ pub mod oms_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        Ok(
-                            http::Response::builder()
-                                .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
-                                .body(empty_body())
-                                .unwrap(),
-                        )
-                    })
-                }
+                _ => Box::pin(async move {
+                    Ok(http::Response::builder()
+                        .status(200)
+                        .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
+                        .body(empty_body())
+                        .unwrap())
+                }),
             }
         }
     }
@@ -1212,10 +1162,7 @@ pub mod order_query_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -1271,23 +1218,17 @@ pub mod order_query_service_server {
                 "/oms.OrderQueryService/GetOrderDetail" => {
                     #[allow(non_camel_case_types)]
                     struct GetOrderDetailSvc<T: OrderQueryService>(pub Arc<T>);
-                    impl<
-                        T: OrderQueryService,
-                    > tonic::server::UnaryService<super::GetOrderDetailReq>
-                    for GetOrderDetailSvc<T> {
+                    impl<T: OrderQueryService> tonic::server::UnaryService<super::GetOrderDetailReq>
+                        for GetOrderDetailSvc<T>
+                    {
                         type Response = super::OrderDetail;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetOrderDetailReq>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).get_order_detail(request).await
-                            };
+                            let fut = async move { (*inner).get_order_detail(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -1314,18 +1255,14 @@ pub mod order_query_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        Ok(
-                            http::Response::builder()
-                                .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
-                                .body(empty_body())
-                                .unwrap(),
-                        )
-                    })
-                }
+                _ => Box::pin(async move {
+                    Ok(http::Response::builder()
+                        .status(200)
+                        .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
+                        .body(empty_body())
+                        .unwrap())
+                }),
             }
         }
     }
@@ -1351,8 +1288,7 @@ pub mod order_query_service_server {
             write!(f, "{:?}", self.0)
         }
     }
-    impl<T: OrderQueryService> tonic::server::NamedService
-    for OrderQueryServiceServer<T> {
+    impl<T: OrderQueryService> tonic::server::NamedService for OrderQueryServiceServer<T> {
         const NAME: &'static str = "oms.OrderQueryService";
     }
 }
@@ -1391,10 +1327,7 @@ pub mod account_query_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -1450,15 +1383,11 @@ pub mod account_query_service_server {
                 "/oms.AccountQueryService/GetBalance" => {
                     #[allow(non_camel_case_types)]
                     struct GetBalanceSvc<T: AccountQueryService>(pub Arc<T>);
-                    impl<
-                        T: AccountQueryService,
-                    > tonic::server::UnaryService<super::GetBalanceReq>
-                    for GetBalanceSvc<T> {
+                    impl<T: AccountQueryService> tonic::server::UnaryService<super::GetBalanceReq>
+                        for GetBalanceSvc<T>
+                    {
                         type Response = super::GetBalanceRsp;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetBalanceReq>,
@@ -1491,18 +1420,14 @@ pub mod account_query_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        Ok(
-                            http::Response::builder()
-                                .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
-                                .body(empty_body())
-                                .unwrap(),
-                        )
-                    })
-                }
+                _ => Box::pin(async move {
+                    Ok(http::Response::builder()
+                        .status(200)
+                        .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
+                        .body(empty_body())
+                        .unwrap())
+                }),
             }
         }
     }
@@ -1528,8 +1453,7 @@ pub mod account_query_service_server {
             write!(f, "{:?}", self.0)
         }
     }
-    impl<T: AccountQueryService> tonic::server::NamedService
-    for AccountQueryServiceServer<T> {
+    impl<T: AccountQueryService> tonic::server::NamedService for AccountQueryServiceServer<T> {
         const NAME: &'static str = "oms.AccountQueryService";
     }
 }
@@ -1544,9 +1468,9 @@ pub mod oms_control_service_server {
             &self,
             request: tonic::Request<super::TakeSnapshotReq>,
         ) -> std::result::Result<tonic::Response<super::TakeSnapshotRsp>, tonic::Status>;
-        async fn update_symbol_config(
+        async fn update_trade_pair_config(
             &self,
-            request: tonic::Request<super::SymbolConfig>,
+            request: tonic::Request<super::TradePairConfig>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
     }
     #[derive(Debug)]
@@ -1572,10 +1496,7 @@ pub mod oms_control_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -1631,23 +1552,17 @@ pub mod oms_control_service_server {
                 "/oms.OMSControlService/TakeSnapshot" => {
                     #[allow(non_camel_case_types)]
                     struct TakeSnapshotSvc<T: OmsControlService>(pub Arc<T>);
-                    impl<
-                        T: OmsControlService,
-                    > tonic::server::UnaryService<super::TakeSnapshotReq>
-                    for TakeSnapshotSvc<T> {
+                    impl<T: OmsControlService> tonic::server::UnaryService<super::TakeSnapshotReq>
+                        for TakeSnapshotSvc<T>
+                    {
                         type Response = super::TakeSnapshotRsp;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::TakeSnapshotReq>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).take_snapshot(request).await
-                            };
+                            let fut = async move { (*inner).take_snapshot(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -1674,26 +1589,21 @@ pub mod oms_control_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/oms.OMSControlService/UpdateSymbolConfig" => {
+                "/oms.OMSControlService/UpdateTradePairConfig" => {
                     #[allow(non_camel_case_types)]
-                    struct UpdateSymbolConfigSvc<T: OmsControlService>(pub Arc<T>);
-                    impl<
-                        T: OmsControlService,
-                    > tonic::server::UnaryService<super::SymbolConfig>
-                    for UpdateSymbolConfigSvc<T> {
+                    struct UpdateTradePairConfigSvc<T: OmsControlService>(pub Arc<T>);
+                    impl<T: OmsControlService> tonic::server::UnaryService<super::TradePairConfig>
+                        for UpdateTradePairConfigSvc<T>
+                    {
                         type Response = ();
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::SymbolConfig>,
+                            request: tonic::Request<super::TradePairConfig>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).update_symbol_config(request).await
-                            };
+                            let fut =
+                                async move { (*inner).update_trade_pair_config(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -1704,7 +1614,7 @@ pub mod oms_control_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
-                        let method = UpdateSymbolConfigSvc(inner);
+                        let method = UpdateTradePairConfigSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -1720,18 +1630,14 @@ pub mod oms_control_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        Ok(
-                            http::Response::builder()
-                                .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
-                                .body(empty_body())
-                                .unwrap(),
-                        )
-                    })
-                }
+                _ => Box::pin(async move {
+                    Ok(http::Response::builder()
+                        .status(200)
+                        .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
+                        .body(empty_body())
+                        .unwrap())
+                }),
             }
         }
     }
@@ -1757,8 +1663,7 @@ pub mod oms_control_service_server {
             write!(f, "{:?}", self.0)
         }
     }
-    impl<T: OmsControlService> tonic::server::NamedService
-    for OmsControlServiceServer<T> {
+    impl<T: OmsControlService> tonic::server::NamedService for OmsControlServiceServer<T> {
         const NAME: &'static str = "oms.OMSControlService";
     }
 }

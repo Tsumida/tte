@@ -123,25 +123,25 @@ message MatchResult{
     repeated MatchRecord records = 2;
 }
 
-enum SymbolState{
-    UndefinedSymbolState = 0;
-    SymbolTrading = 1;    // 正常交易
-    SymbolSuspended = 2;  // 不可交易，但可以撤单
-    SymbolNew = 3;        // 新上线，暂不可交易
+enum TradePairState{
+    UndefinedPairState = 0;
+    TradingPair = 1;    // 正常交易
+    SuspendedPair = 2;  // 不可交易，但可以撤单
+    NewPair = 3;        // 新上线，暂不可交易
 }
 
 // ======================================== 配置类
-message SymbolConfig{
-    string symbol = 1;
+message TradePairConfig{
+    string trade_pair = 1;
     string min_price_increment = 2;
     string min_quantity_increment = 3;
-    int32 state = 4; // 对应SymbolState枚举
+    int32 state = 4; // 对应TradePairState枚举
     string volatility_limit = 5; // 价格波动限制百分比，例如0.1表示10%
 }
 
 // ======================================= 行情类
 message LevelSnapshot{
-    string symbol = 1; 
+    string trade_pair = 1; 
     repeated Order bids = 2; 
     repeated Order asks = 3; 
 }
@@ -222,5 +222,5 @@ service AccountQueryService {
 service OMSControlService {
     rpc TakeSnapshot(TakeSnapshotReq) returns (TakeSnapshotRsp);
 
-    rpc UpdateSymbolConfig(SymbolConfig) returns (google.protobuf.Empty);
+    rpc UpdateTradePairConfig(TradePairConfig) returns (google.protobuf.Empty);
 }
