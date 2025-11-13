@@ -1,0 +1,23 @@
+# ==============================
+# Dockerfile.server
+# ==============================
+FROM alpine:3.20
+
+# 工作目录
+WORKDIR /app
+
+# 从本地复制静态编译产物
+COPY /target/x86_64-unknown-linux-musl/release/mvp_server /app/mvp_server
+
+# 环境变量
+ENV RUST_LOG=debug \
+    ENV=dev \
+    GRPC_SERVER_ENDPOINT=[::1]:8080 \
+    TRACE_ENDPOINT=http://localhost:4318
+
+
+
+# 暴露端口
+EXPOSE 8080
+
+ENTRYPOINT ["/app/mvp_server"]

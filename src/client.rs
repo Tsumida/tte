@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn call(line: String) -> Result<(), Box<dyn std::error::Error>> {
     let mut client =
-        oms_service_client::OmsServiceClient::connect(format!("http://[::1]:51230")).await?;
+        oms_service_client::OmsServiceClient::connect(format!("http://[::1]:8080")).await?;
     let parts: Vec<&str> = line.trim().split(',').collect();
     if parts.len() < 9 {
         println!("Invalid input, expected 9 fields");

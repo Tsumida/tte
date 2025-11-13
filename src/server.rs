@@ -1,21 +1,17 @@
 use rust_decimal_macros::dec;
 use tonic::transport::Server;
-use tracing_subscriber;
 use trade_engine::{
     common::types::TradePair,
     oms::{oms::OMS, service},
     pbcode::oms::{self, oms_service_server},
 };
 
+use trade_engine::infra::config::AppConfig;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // todo: load config from toml file
-    // initialize tracing subscriber
-    tracing_subscriber::fmt()
-        .with_file(true)
-        .with_line_number(true)
-        .with_thread_ids(true)
-        .init();
+    let config = AppConfig::from_env();
+    config.init_logs().print_args().init_tracer().await?;
 
     let balances = vec![
         (1001, "BTC", 100.0),
@@ -46,8 +42,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let svc = service::TradeSystem::run_trade_system(oms).await?;
 
     // rpc handler
-    let addr = "[::1]:51230".parse()?;
-    tracing::info!("Starting OMS gRPC server at {}", addr);
+    let addr = config.grpc_server_endpoint().parse()?;
+    tracing::info!("oms up, listen at {}", addr);
     Server::builder()
         .add_service(oms_service_server::OmsServiceServer::new(svc))
         .serve(addr)
@@ -55,6 +51,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // todo: stream handler
 
-    tracing::info!("OMS gRPC server stopped");
+    tracing::info!("oms down");
     Ok(())
 }

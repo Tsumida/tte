@@ -1,4 +1,5 @@
 pub mod common;
+pub mod infra;
 pub mod ledger;
 pub mod match_engine;
 pub mod oms;
