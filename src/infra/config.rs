@@ -1,10 +1,12 @@
 use getset::Getters;
 use opentelemetry::{
     global,
-    trace::{Span, Tracer},
+    trace::{Span, Tracer, TracerProvider},
 };
-use opentelemetry_otlp::WithExportConfig;
-use tracing::info;
+use opentelemetry_otlp::{ExportConfig, WithExportConfig, WithTonicConfig};
+use tracing::{Instrument, Level, info};
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::{Layer, Registry, filter, layer::SubscriberExt};
 
 #[derive(Debug, Clone)]
 pub enum Env {
@@ -16,6 +18,8 @@ pub enum Env {
 #[derive(Debug, Clone, Getters)]
 pub struct AppConfig {
     #[getset(get = "pub")]
+    app_name: String,
+    #[getset(get = "pub")]
     trace_endpoint: String,
     #[getset(get = "pub")]
     grpc_server_endpoint: String,
@@ -26,6 +30,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            app_name: "trade_engine".to_string(),
             trace_endpoint: "http://localhost:4318".to_string(),
             grpc_server_endpoint: "[::1]:8080".to_string(),
             env: Env::Dev,
@@ -36,6 +41,9 @@ impl Default for AppConfig {
 impl AppConfig {
     pub fn from_env() -> Self {
         let mut config = Self::default();
+        if let Ok(app_name) = std::env::var("APP_NAME") {
+            config.app_name = app_name;
+        }
         if let Ok(endpoint) = std::env::var("TRACE_ENDPOINT") {
             config.trace_endpoint = endpoint;
         }
@@ -52,15 +60,6 @@ impl AppConfig {
         }
 
         config
-    }
-
-    pub fn init_logs(&self) -> &Self {
-        tracing_subscriber::fmt()
-            .with_file(true)
-            .with_line_number(true)
-            .with_thread_ids(true)
-            .init();
-        self
     }
 
     pub fn print_args(&self) -> &Self {
@@ -82,25 +81,50 @@ impl AppConfig {
         let exporter = SpanExporter::builder()
             .with_tonic() // 4318
             .with_endpoint(self.trace_endpoint.as_str())
-            .with_timeout(std::time::Duration::from_secs(3))
+            .with_timeout(std::time::Duration::from_secs(2))
             .build()?;
 
         let resource = Resource::builder()
-            .with_attributes(vec![KeyValue::new("service.name", "trade_engine")])
+            .with_attributes(vec![KeyValue::new("service.name", self.app_name.clone())])
             .build();
 
         let provider = TracerProviderBuilder::default()
             .with_batch_exporter(exporter)
             .with_resource(resource)
             .build();
-        global::set_tracer_provider(provider);
+
+        let tracer = provider.tracer(self.app_name().clone());
+        let subscriber = Registry::default()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_file(true)
+                    .with_line_number(true)
+                    .with_thread_ids(true)
+                    .with_filter(tracing_subscriber::filter::LevelFilter::from_level(
+                        Level::INFO,
+                    )),
+            ) // stdout logs
+            .with(
+                OpenTelemetryLayer::new(tracer).with_filter(filter::filter_fn(|metadata| {
+                    metadata.level() <= &Level::INFO
+                        && metadata.target().starts_with("trade_engine")
+                })),
+            ); // export spans to jaeger
+
+        tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
 
         // send a span to the exporter to verify connection
-        global::tracer("init_tracer").in_span("init_tracer", |_span| {
+        global::tracer(self.app_name().clone()).in_span("init_tracer", |_span| {
             info!("try_send_span to {}", self.trace_endpoint);
         });
 
         info!("tracing initialized with endpoint {}", self.trace_endpoint);
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error>> {
+        info!("App down");
+        // todo: shutdown opentelemetry
         Ok(())
     }
 }

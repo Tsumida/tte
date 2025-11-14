@@ -4,8 +4,6 @@ services:
     container_name: jaeger
     ports:
       - "16686:16686"   # Jaeger Web UI
-      - "6831:6831/udp" # UDP for traces
-      - "14268:14268"   # HTTP ingest endpoint
       - "4317:4317"     # OTLP gRPC
       - "4318:4318"     # OTLP HTTP
     environment:

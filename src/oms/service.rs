@@ -65,7 +65,7 @@ impl TradeSystem {
 // Impl RPC Handler
 #[tonic::async_trait]
 impl oms::oms_service_server::OmsService for TradeSystem {
-    #[instrument]
+    #[instrument(level = "info", skip_all)]
     async fn place_order(
         &self,
         req: tonic::Request<oms::PlaceOrderReq>,
@@ -107,7 +107,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         Ok(tonic::Response::new(oms::PlaceOrderRsp {}))
     }
 
-    #[instrument]
+    #[instrument(level = "info", skip_all)]
     async fn cancel_order(
         &self,
         req: tonic::Request<oms::CancelOrderReq>,

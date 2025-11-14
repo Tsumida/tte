@@ -1,17 +1,18 @@
 use rust_decimal_macros::dec;
 use tonic::transport::Server;
+use tracing::info;
+use trade_engine::infra::config::AppConfig;
 use trade_engine::{
     common::types::TradePair,
     oms::{oms::OMS, service},
     pbcode::oms::{self, oms_service_server},
 };
 
-use trade_engine::infra::config::AppConfig;
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::from_env();
-    config.init_logs().print_args().init_tracer().await?;
+    let _ = config.init_tracer().await?;
+    config.print_args();
 
     let balances = vec![
         (1001, "BTC", 100.0),
@@ -43,14 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // rpc handler
     let addr = config.grpc_server_endpoint().parse()?;
-    tracing::info!("oms up, listen at {}", addr);
-    Server::builder()
-        .add_service(oms_service_server::OmsServiceServer::new(svc))
-        .serve(addr)
-        .await?;
+    let svc = oms_service_server::OmsServiceServer::new(svc);
+
+    info!("oms listen at {}", addr);
+    Server::builder().add_service(svc).serve(addr).await?;
 
     // todo: stream handler
-
-    tracing::info!("oms down");
+    config.shutdown().await?;
     Ok(())
 }

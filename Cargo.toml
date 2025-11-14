@@ -43,6 +43,7 @@ opentelemetry_sdk = "0.31.0"
 opentelemetry-semantic-conventions = "0.31.0"
 tracing-appender = "0.2.3"
 opentelemetry-appender-tracing = "0.31.1"
+tonic-tracing-opentelemetry = "0.32.0"
 
 [build-dependencies]
 tonic-build = { version = "0.9"}
