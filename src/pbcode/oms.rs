@@ -69,23 +69,31 @@ pub struct OrderDetail {
 pub struct AdminCmd {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RpcCmd {
+    /// 对应BizAction枚举
+    #[prost(int32, tag = "1")]
+    pub biz_action: i32,
+    /// biz_action为PlaceOrder时有效
+    #[prost(message, optional, tag = "2")]
+    pub place_order_req: ::core::option::Option<PlaceOrderReq>,
+    /// biz_action为CancelOrder时有效
+    #[prost(message, optional, tag = "3")]
+    pub cancel_order_req: ::core::option::Option<CancelOrderReq>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TradeCmd {
     #[prost(uint64, tag = "1")]
     pub seq_id: u64,
     #[prost(uint64, tag = "2")]
     pub prev_seq_id: u64,
-    /// 对应BizAction枚举
+    /// bitmask, 1表示RPC, 2表示MatchResult
     #[prost(int32, tag = "3")]
-    pub biz_action: i32,
-    /// biz_action为PlaceOrder时有效
+    pub msg_types: i32,
     #[prost(message, optional, tag = "4")]
-    pub place_order_req: ::core::option::Option<PlaceOrderReq>,
-    /// biz_action为CancelOrder时有效
+    pub rpc_cmd: ::core::option::Option<RpcCmd>,
     #[prost(message, optional, tag = "5")]
-    pub cancel_order_req: ::core::option::Option<CancelOrderReq>,
-    /// biz_action >=100及以上时有效
-    #[prost(message, optional, tag = "10")]
-    pub admin_cmd: ::core::option::Option<AdminCmd>,
+    pub match_result: ::core::option::Option<MatchResult>,
 }
 /// 撮合结果
 #[allow(clippy::derive_partial_eq_without_eq)]

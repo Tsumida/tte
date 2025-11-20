@@ -1,5 +1,5 @@
 test:
-	cargo test
+	@cargo test --lib -- --nocapture
 
 intergrtation-test:
 	@cargo test --package tte --test integration_test -- --exact --nocapture 

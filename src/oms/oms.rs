@@ -91,6 +91,35 @@ impl OMS {
         &mut self,
         cmd: Arc<oms::TradeCmd>,
     ) -> Result<OMSChangeResult, OMSErr> {
+        match cmd.msg_types {
+            1 => {
+                if let Some(rpc_cmd) = &cmd.rpc_cmd {
+                    self.process_rpc_cmd(rpc_cmd)
+                } else {
+                    Err(OMSErr::new(
+                        err_code::ERR_INVALID_REQUEST,
+                        "Missing rpc_cmd",
+                    ))
+                }
+            }
+            2 => {
+                if let Some(result) = &cmd.match_result {
+                    self.process_match_result(result)
+                } else {
+                    Err(OMSErr::new(
+                        err_code::ERR_INVALID_REQUEST,
+                        "Missing rpc_cmd",
+                    ))
+                }
+            }
+            _ => Err(OMSErr::new(
+                err_code::ERR_INVALID_REQUEST,
+                "Invalid msg_types",
+            )),
+        }
+    }
+
+    fn process_rpc_cmd(&mut self, cmd: &oms::RpcCmd) -> Result<OMSChangeResult, OMSErr> {
         match BizAction::from_i32(cmd.biz_action) {
             Some(oms::BizAction::PlaceOrder) => {
                 let req = cmd.place_order_req.as_ref().ok_or_else(|| {
@@ -141,11 +170,22 @@ impl OMS {
             }
             _ => {
                 // ignore
-                Ok(OMSChangeResult {
-                    spot_change_result: None,
-                })
+                // Ok(OMSChangeResult {
+                //     spot_change_result: None,
+                // })
+                todo!()
             }
         }
+    }
+
+    fn process_match_result(
+        &mut self,
+        result: &oms::MatchResult,
+    ) -> Result<OMSChangeResult, OMSErr> {
+        // todo!
+        Ok(OMSChangeResult {
+            spot_change_result: None,
+        })
     }
 
     pub fn seq_id(&self) -> SeqID {

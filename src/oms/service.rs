@@ -3,14 +3,16 @@
 use std::sync::Arc;
 
 use crate::common::{err_code, types};
+use crate::infra::kafka::ConsumerConfig;
 use crate::oms::error::OMSErr;
 use crate::sequencer::api::{DefaultSequencer, SequenceSetter};
 use crate::{
     oms::oms::{OMS, OrderBuilder},
     pbcode::oms,
 };
+use futures::TryStreamExt;
 use tokio::sync::{RwLock, mpsc, oneshot};
-use tracing::instrument;
+use tracing::{error, instrument};
 
 // type OMSView = OMS;
 type CmdExt = CmdWrapper<Arc<oms::TradeCmd>>;
@@ -31,20 +33,23 @@ pub struct TradeSystem {
 }
 
 impl TradeSystem {
-    pub async fn run_trade_system(oms: OMS) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn run_trade_system(
+        oms: OMS,
+        match_consumer_cfg: Option<&ConsumerConfig>,
+    ) -> Result<(Self, Vec<tokio::task::JoinHandle<()>>), Box<dyn std::error::Error>> {
         let init_seq_id = oms.seq_id();
         let chan_size = 128;
         let (sequencer, submit_send, commit_recv) =
             DefaultSequencer::<CmdExt>::new(init_seq_id, chan_size);
-
         let shared_oms = Arc::new(RwLock::new(oms));
         let mut apply_thread = ApplyThread {
             oms: shared_oms.clone(),
             commit_recv,
         };
 
+        // todo: panic if dependencies fail
         // todo: graceful shutdown
-        _ = vec![
+        let mut handlers = vec![
             // sequencer thread
             tokio::spawn(async move {
                 sequencer.run().await;
@@ -55,10 +60,20 @@ impl TradeSystem {
             }),
         ];
 
-        Ok(Self {
-            oms_view: shared_oms,
-            submit_send,
-        })
+        if let Some(cfg) = match_consumer_cfg {
+            let mut match_result_consumer = MatchResultConsumer { cfg: cfg.clone() };
+            handlers.push(tokio::spawn(async move {
+                let _ = match_result_consumer.run().await;
+            }));
+        }
+
+        Ok((
+            Self {
+                oms_view: shared_oms,
+                submit_send,
+            },
+            handlers,
+        ))
     }
 
     async fn propose(&self, cmd: CmdExt) -> Result<(), OMSErr> {
@@ -309,11 +324,7 @@ impl ApplyThread {
                         is_success: true,
                         err: None,
                     }) {
-                        tracing::error!(
-                            "response channel closed for action {:?} seq_id {}",
-                            cmd.biz_action,
-                            cmd.seq_id
-                        );
+                        tracing::error!("response channel closed for action {:?}", cmd);
                     }
                 }
             });
@@ -322,6 +333,36 @@ impl ApplyThread {
             results.clear();
         }
         tracing::info!("ApplyThread stopped");
+    }
+}
+
+struct MatchResultConsumer {
+    cfg: ConsumerConfig,
+}
+
+impl MatchResultConsumer {
+    async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let consumer = self.cfg.subscribe().map_err(|e| {
+            tracing::error!("Failed to create match result consumer: {:?}", e);
+            e
+        })?;
+
+        tracing::info!("MatchResultConsumer started");
+        match consumer
+            .stream()
+            .try_for_each(|msg| {
+                tracing::info!("Received match result: {:?}", msg);
+                futures::future::ok(())
+            })
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                error!("MatchResultConsumer error: {:?}", e);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -342,10 +383,13 @@ impl CmdWrapper<Arc<oms::TradeCmd>> {
                 cmd: Arc::new(oms::TradeCmd {
                     seq_id: 0,
                     prev_seq_id: 0,
-                    biz_action: oms::BizAction::PlaceOrder as i32,
-                    place_order_req: Some(cmd),
-                    cancel_order_req: None,
-                    admin_cmd: None,
+                    msg_types: 1,
+                    rpc_cmd: Some(oms::RpcCmd {
+                        biz_action: oms::BizAction::PlaceOrder as i32,
+                        place_order_req: Some(cmd),
+                        cancel_order_req: None,
+                    }),
+                    match_result: None,
                 }),
                 rsp_chan: Some(rsp_chan),
             },
@@ -360,10 +404,13 @@ impl CmdWrapper<Arc<oms::TradeCmd>> {
                 cmd: Arc::new(oms::TradeCmd {
                     seq_id: 0,
                     prev_seq_id: 0,
-                    biz_action: oms::BizAction::CancelOrder as i32,
-                    place_order_req: None,
-                    cancel_order_req: Some(cmd),
-                    admin_cmd: None,
+                    msg_types: 1,
+                    rpc_cmd: Some(oms::RpcCmd {
+                        biz_action: oms::BizAction::CancelOrder as i32,
+                        place_order_req: None,
+                        cancel_order_req: Some(cmd),
+                    }),
+                    match_result: None,
                 }),
                 rsp_chan: Some(rsp_chan),
             },

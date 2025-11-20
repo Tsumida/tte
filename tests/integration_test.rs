@@ -17,7 +17,7 @@ fn dev_config() -> (ProducerConfig, ConsumerConfig) {
         bootstrap_servers: "localhost:9092".to_string(),
         topics: vec!["test".to_string()],
         group_id: "test_group".to_string(),
-        auto_offset_reset: rdkafka::Offset::End,
+        auto_offset_reset: "earliest".to_string(),
     };
 
     (prod_cfg, consumer_cfg)
@@ -36,15 +36,7 @@ async fn test_kafka_prod_consume() -> Result<(), Box<dyn std::error::Error>> {
     let consumer = rdkafka::config::ClientConfig::new()
         .set("bootstrap.servers", &consumer_cfg.bootstrap_servers)
         .set("group.id", &consumer_cfg.group_id)
-        .set(
-            "auto.offset.reset",
-            // consumer_cfg.auto_offset_reset.to_string().as_str(),
-            match consumer_cfg.auto_offset_reset {
-                rdkafka::Offset::Beginning => "earliest",
-                rdkafka::Offset::End => "latest",
-                _ => "latest",
-            },
-        )
+        .set("auto.offset.reset", &consumer_cfg.auto_offset_reset)
         .create::<rdkafka::consumer::StreamConsumer>()
         .expect("Consumer creation failed");
     consumer

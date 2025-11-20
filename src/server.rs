@@ -13,6 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::from_env();
     let _ = config.init_tracer().await?;
     config.print_args();
+    let kafka_cfg = config.get_match_consumer_config();
 
     let balances = vec![
         (1001, "BTC", 100.0),
@@ -40,14 +41,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut oms = OMS::new();
     oms.with_init_ledger(balances).with_market_data(market_data);
 
-    let svc = service::TradeSystem::run_trade_system(oms).await?;
-
+    let (svc, _bg_tasks) = service::TradeSystem::run_trade_system(oms, kafka_cfg).await?;
     // rpc handler
     let addr = config.grpc_server_endpoint().parse()?;
-    let svc = oms_service_server::OmsServiceServer::new(svc);
 
     info!("oms listen at {}", addr);
-    Server::builder().add_service(svc).serve(addr).await?;
+    Server::builder()
+        .add_service(oms_service_server::OmsServiceServer::new(svc))
+        .serve(addr)
+        .await?;
 
     // todo: stream handler
     config.shutdown().await?;

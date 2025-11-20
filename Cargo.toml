@@ -46,6 +46,7 @@ opentelemetry-appender-tracing = "0.31.1"
 tonic-tracing-opentelemetry = "0.32.0"
 rdkafka = "0.38.0"
 futures = "0.3.31"
+clap = { version = "4.5.53", features = ["derive"] }
 
 [build-dependencies]
 tonic-build = { version = "0.9"}

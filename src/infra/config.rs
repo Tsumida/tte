@@ -1,3 +1,4 @@
+use crate::infra::kafka::{ConsumerConfig, ProducerConfig};
 use getset::Getters;
 use opentelemetry::{
     global,
@@ -7,8 +8,6 @@ use opentelemetry_otlp::WithExportConfig;
 use tracing::{Level, info};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{Layer, Registry, filter, layer::SubscriberExt};
-
-use crate::infra::kafka::{ConsumerConfig, ProducerConfig};
 
 #[derive(Debug, Clone)]
 pub enum Env {
@@ -68,6 +67,10 @@ impl AppConfig {
         }
 
         config
+    }
+
+    pub fn get_match_consumer_config(&self) -> Option<&ConsumerConfig> {
+        self.kafka_consumers.first()
     }
 
     pub fn print_args(&self) -> &Self {
