@@ -95,6 +95,27 @@ pub struct Order {
     pub trade_pair: TradePair,
 }
 
+impl Into<oms::Order> for Order {
+    fn into(self) -> oms::Order {
+        oms::Order {
+            order_id: self.order_id,
+            account_id: self.account_id,
+            client_order_id: self.client_order_id,
+            seq_id: self.seq_id,
+            prev_seq_id: self.prev_seq_id,
+            time_in_force: self.time_in_force as i32,
+            order_type: self.order_type as i32,
+            direction: self.direction as i32,
+            price: self.price.to_string(),
+            post_only: self.post_only,
+            trade_pair: Some(self.trade_pair.into()),
+            quantity: self.target_qty.to_string(),
+            create_time: "".to_string(), // TODO
+            stp_strategy: 0,             // TODO
+        }
+    }
+}
+
 #[derive(Debug, Clone, Getters)]
 pub struct OrderDetail {
     #[getset(get = "pub")]
@@ -105,6 +126,8 @@ pub struct OrderDetail {
     filled_qty: Decimal,
     #[getset(get = "pub", set = "pub")]
     last_seq_id: SeqID,
+    #[getset(get = "pub", set = "pub")]
+    update_time: u64,
 }
 
 impl OrderDetail {
@@ -114,9 +137,24 @@ impl OrderDetail {
             current_state: OrderState::New,
             filled_qty: Decimal::new(0, 0),
             last_seq_id: 0,
+            update_time: 0,
         }
     }
 }
+
+// from arena ?
+impl Into<oms::OrderDetail> for &OrderDetail {
+    fn into(self) -> oms::OrderDetail {
+        oms::OrderDetail {
+            original: Some(self.original.clone().into()),
+            current_state: self.current_state.as_str_name().to_string(),
+            filled_quantity: self.filled_qty.to_string(), // 考虑
+            last_seq_id: self.last_seq_id,
+            update_time: self.update_time,
+        }
+    }
+}
+
 // 撮合结果结构体
 #[derive(Debug, Clone)]
 pub struct MatchRecord {

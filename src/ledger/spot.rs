@@ -43,6 +43,7 @@ pub struct Spot {
     currency: Symbol,
     deposit: Decimal,
     frozen: Decimal,
+    update_time: u64,
 }
 
 impl Spot {
@@ -52,6 +53,7 @@ impl Spot {
             currency,
             deposit: Decimal::ZERO,
             frozen: Decimal::ZERO,
+            update_time: 0,
         }
     }
 
@@ -245,6 +247,24 @@ impl SpotLedger {
             .and_then(|currency_map| currency_map.get(currency))
             .cloned()
             .unwrap_or(Spot::new(account_id, currency.to_string()))
+    }
+
+    // [](currency, deposit, frozen)
+    pub fn get_balance(&self, account_id: u64) -> Vec<(Symbol, Decimal, Decimal, u64)> {
+        match self.spots.get(&account_id) {
+            Some(currency_map) => currency_map
+                .iter()
+                .map(|(currency, spot)| {
+                    (
+                        currency.clone(),
+                        spot.deposit,
+                        spot.frozen,
+                        spot.update_time,
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     pub(crate) fn get_spot_and_frozen(

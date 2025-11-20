@@ -1,12 +1,14 @@
 use getset::Getters;
 use opentelemetry::{
     global,
-    trace::{Span, Tracer, TracerProvider},
+    trace::{Tracer, TracerProvider},
 };
-use opentelemetry_otlp::{ExportConfig, WithExportConfig, WithTonicConfig};
-use tracing::{Instrument, Level, info};
+use opentelemetry_otlp::WithExportConfig;
+use tracing::{Level, info};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{Layer, Registry, filter, layer::SubscriberExt};
+
+use crate::infra::kafka::{ConsumerConfig, ProducerConfig};
 
 #[derive(Debug, Clone)]
 pub enum Env {
@@ -25,6 +27,10 @@ pub struct AppConfig {
     grpc_server_endpoint: String,
     #[getset(get = "pub")]
     env: Env,
+    #[getset(get = "pub")]
+    kafka_producers: Vec<ProducerConfig>,
+    #[getset(get = "pub")]
+    kafka_consumers: Vec<ConsumerConfig>,
 }
 
 impl Default for AppConfig {
@@ -34,6 +40,8 @@ impl Default for AppConfig {
             trace_endpoint: "http://localhost:4318".to_string(),
             grpc_server_endpoint: "[::1]:8080".to_string(),
             env: Env::Dev,
+            kafka_producers: vec![],
+            kafka_consumers: vec![],
         }
     }
 }

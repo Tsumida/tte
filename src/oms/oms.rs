@@ -184,6 +184,21 @@ impl OMS {
         }
     }
 
+    pub fn get_order_detail_by_client_id(
+        &self,
+        account_id: u64,
+        client_order_id: &str,
+    ) -> Option<&OrderDetail> {
+        match self.client_order_map.get(client_order_id) {
+            Some(order_id) => self.get_order_detail(account_id, order_id),
+            None => None,
+        }
+    }
+
+    pub fn get_ledger(&self) -> &SpotLedger {
+        &self.ledger
+    }
+
     fn check_symbol_trading(&self, market_config: &SymbolMarketData) -> Result<(), OMSErr> {
         if market_config.config.state != oms::TradePairState::TradingPair as i32 {
             return Err(OMSErr::new(

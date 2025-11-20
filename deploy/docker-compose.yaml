@@ -24,3 +24,37 @@ services:
       - "8080:8080"
     depends_on:
       - jaeger
+
+  kafka:
+    image: apache/kafka:4.1.1
+    container_name: kafka-kraft
+    restart: always
+    ports:
+      # Kafka 客户端通信端口，映射到主机 9092
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      # 2. 节点角色：设置为 'controller,broker' 实现单节点模式
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'controller,broker'
+      # **注意**: 在实际部署时，你应该运行 'kafka-storage.sh random-uuid' 来生成一个唯一的ID。
+      KAFKA_CLUSTER_ID: '03WjUuDk1I8gY0dE9gWlQe'
+      # 4. 监听器配置
+      # PLAINTEXT://:9092 是内部监听器地址
+      # PLAINTEXT_HOST://0.0.0.0:29092 用于外部访问 (可选，但推荐)
+      KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092
+      # 5. 告知客户端连接的地址
+      # 外部客户端通过 localhost:9092 连接
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      # 6. Controller Quorum 投票节点列表
+      # 单节点模式下，自身是唯一的 Controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9092' # 格式：<node_id>@<hostname>:<port>
+      # 7. 数据存储路径
+      KAFKA_LOG_DIRS: /tmp/kraft-storage
+      # 8. 允许自动创建 Topic
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    volumes:
+      # 持久化 KRaft 模式下的数据
+      - kafka_kraft_data:/tmp/kraft-storage
+volumes:
+  kafka_kraft_data:

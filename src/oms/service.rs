@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::common::types;
+use crate::common::{err_code, types};
 use crate::oms::error::OMSErr;
 use crate::sequencer::api::{DefaultSequencer, SequenceSetter};
 use crate::{
@@ -60,6 +60,13 @@ impl TradeSystem {
             submit_send,
         })
     }
+
+    async fn propose(&self, cmd: CmdExt) -> Result<(), OMSErr> {
+        self.submit_send.send(cmd).await.map_err(|e| {
+            tracing::error!("Failed to propose cmd: {:?}", e);
+            OMSErr::new(err_code::ERR_INTERNAL, "sequencer failed")
+        })
+    }
 }
 
 // Impl RPC Handler
@@ -90,11 +97,12 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         // todo, write order into sequencer channel and wait for response.
         let (cmd, rsp_recv) = CmdWrapper::place_order_cmd(place_order_req.clone());
         let start_time = std::time::Instant::now();
-        let _ =
-            self.submit_send.send(cmd).await.map_err(|e| {
-                tonic::Status::internal(format!("Sequencer append failed: {:?}", e))
-            })?;
+        let _ = self
+            .propose(cmd)
+            .await
+            .map_err(|e| tonic::Status::internal(format!("Sequencer append failed: {:?}", e)))?;
 
+        // todo: timeout
         let _ = rsp_recv
             .await
             .map_err(|e| tonic::Status::internal(format!("Failed to receive response: {:?}", e)))?;
@@ -163,6 +171,96 @@ impl oms::oms_service_server::OmsService for TradeSystem {
 
         Ok(tonic::Response::new(oms::CancelOrderRsp {}))
     }
+
+    #[instrument(level = "info", skip_all)]
+    async fn get_order_detail(
+        &self,
+        req: tonic::Request<oms::GetOrderDetailReq>,
+    ) -> Result<tonic::Response<oms::GetOrderDetailRsp>, tonic::Status> {
+        let request = req.get_ref();
+        let order_id = &request.order_id;
+        let account_id = request.account_id;
+        let view = self.oms_view.read().await;
+
+        if !order_id.is_empty() {
+            let order = view
+                .get_order_detail(account_id, order_id)
+                .ok_or_else(|| tonic::Status::not_found("order not found by order_id"))?;
+            Ok(tonic::Response::new(oms::GetOrderDetailRsp {
+                detail: Some(order.into()),
+            }))
+        } else {
+            let a = view
+                .get_order_detail_by_client_id(account_id, &request.client_order_id)
+                .ok_or_else(|| tonic::Status::not_found("order not found by client_order_id"))?;
+            return Ok(tonic::Response::new(oms::GetOrderDetailRsp {
+                detail: Some(a.into()),
+            }));
+        }
+    }
+
+    #[instrument(level = "info", skip_all)]
+    async fn get_balance(
+        &self,
+        req: tonic::Request<oms::GetBalanceReq>,
+    ) -> Result<tonic::Response<oms::GetBalanceRsp>, tonic::Status> {
+        let request = req.get_ref();
+        let account_id = request.account_id;
+        let view = self.oms_view.read().await;
+
+        let balance = view.get_ledger().get_balance(account_id);
+        Ok(tonic::Response::new(oms::GetBalanceRsp {
+            account_id,
+            balances: balance
+                .into_iter()
+                .map(
+                    |(currency, deposit, frozen, update_time)| oms::BalanceItem {
+                        currency,
+                        balance: (deposit + frozen).to_string(),
+                        available: deposit.to_string(),
+                        frozen: frozen.to_string(),
+                        update_time,
+                    },
+                )
+                .collect(),
+        }))
+    }
+
+    #[instrument(level = "info", skip_all)]
+    async fn transfer_freeze(
+        &self,
+        req: tonic::Request<oms::TransferFreezeReq>,
+    ) -> Result<tonic::Response<oms::TransferFreezeRsp>, tonic::Status> {
+        todo!()
+    }
+
+    #[instrument(level = "info", skip_all)]
+    async fn transfer(
+        &self,
+        req: tonic::Request<oms::TransferReq>,
+    ) -> Result<tonic::Response<oms::TransferRsp>, tonic::Status> {
+        todo!()
+    }
+
+    #[instrument(level = "info", skip_all)]
+    async fn take_snapshot(
+        &self,
+        req: tonic::Request<oms::TakeSnapshotReq>,
+    ) -> Result<tonic::Response<oms::TakeSnapshotRsp>, tonic::Status> {
+        todo!()
+    }
+
+    #[instrument(level = "info", skip_all)]
+    async fn update_trade_pair_config(
+        &self,
+        req: tonic::Request<oms::UpdateTradePairConfigReq>,
+    ) -> Result<tonic::Response<oms::UpdateTradePairConfigRsp>, tonic::Status> {
+        todo!()
+    }
+}
+
+struct ReplayThread {
+    reply_chan: oneshot::Sender<Informer>,
 }
 
 struct ApplyThread {

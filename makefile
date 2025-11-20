@@ -1,6 +1,9 @@
 test:
 	cargo test
 
+intergrtation-test:
+	@cargo test --package tte --test integration_test -- --exact --nocapture 
+
 cov:
 	# ignore /src/pbcode
 	cargo tarpaulin --ignore-tests --exclude-files src/pbcode/* --out Html

@@ -3,7 +3,6 @@ syntax = "proto3";
 
 package oms;
 
-import "google/protobuf/empty.proto";
 
 // 业务枚举统一规范：
 //  1. 所有枚举的int32形式和pb enum字段编号一致， 其string形式和字段完全一致. 例: CancelTaker = 1，则1是int32形式，"CancelTaker"是string形式
@@ -123,6 +122,17 @@ message MatchResult{
     repeated MatchRecord records = 2;
 }
 
+// ======================================== 账户类
+message BalanceItem{
+    string currency = 1; // BTC\/USDT等
+    string balance = 2; // 总余额, 等于available + frozen
+    string available = 3; // 可用于交易
+    string frozen = 4; // 冻结余额
+    uint64 update_time = 5; // 最后更新时间，us
+}
+
+// ======================================== 交易对状态
+
 enum TradePairState{
     UndefinedPairState = 0;
     TradingPair = 1;    // 正常交易
@@ -188,7 +198,31 @@ message TakeSnapshotRsp{
 message GetOrderDetailReq{
     string order_id = 1;
     string client_order_id = 2; 
+    uint64 account_id = 3;
 }
+
+message GetOrderDetailRsp{
+    OrderDetail detail = 1;
+}
+
+message TransferFreezeReq{
+    string transfer_id = 1;
+    uint64 account_id = 2;
+    string currency = 3;
+    string amount = 4;  
+}
+
+message TransferFreezeRsp{}
+
+message TransferReq{
+    string transfer_id = 1;
+    uint64 from_account_id = 2;
+    uint64 to_account_id = 3;
+    string currency = 4;
+    string amount = 5;  
+}
+
+message TransferRsp{}
 
 // ======================================== 账户类
 message GetBalanceReq{
@@ -196,9 +230,16 @@ message GetBalanceReq{
 }
 
 message GetBalanceRsp{
-    string available_cash = 1;
-    string total_cash = 2;
-    string margin_used = 3;
+    uint64 account_id = 1;
+    repeated BalanceItem balances = 2;
+}
+
+// ======================================== 管理类
+message UpdateTradePairConfigReq{
+    TradePairConfig config = 1;
+}
+
+message UpdateTradePairConfigRsp{
 }
 
 
@@ -207,20 +248,19 @@ service OMSService {
     rpc PlaceOrder(PlaceOrderReq) returns (PlaceOrderRsp);
 
     rpc CancelOrder(CancelOrderReq) returns (CancelOrderRsp);
-}
 
-service OrderQueryService {
+    rpc TransferFreeze(TransferFreezeReq) returns (TransferFreezeRsp);
+
+    rpc Transfer(TransferReq) returns (TransferRsp);
+
+    // 订单查询类
     // 优先按order_id查询，其次按client_order_id查询
-    rpc GetOrderDetail(GetOrderDetailReq) returns (OrderDetail);
-}
+    rpc GetOrderDetail(GetOrderDetailReq) returns (GetOrderDetailRsp);
 
-service AccountQueryService {
+    // Balance类
     rpc GetBalance(GetBalanceReq) returns (GetBalanceRsp);
-    // rpc GetEODBalance(GetEODBalanceReq) returns (GetEODBalanceRsp);
-}
 
-service OMSControlService {
+    // 内部使用
     rpc TakeSnapshot(TakeSnapshotReq) returns (TakeSnapshotRsp);
-
-    rpc UpdateTradePairConfig(TradePairConfig) returns (google.protobuf.Empty);
+    rpc UpdateTradePairConfig(UpdateTradePairConfigReq) returns (UpdateTradePairConfigRsp);
 }
