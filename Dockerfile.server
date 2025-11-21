@@ -1,13 +1,65 @@
+# # ==============================
+# # Dockerfile.server
+# # ==============================
+# FROM alpine:3.20
+
+# # 工作目录
+# WORKDIR /app
+
+# # 从本地复制静态编译产物
+# COPY /target/x86_64-unknown-linux-musl/release/mvp_server /app/mvp_server
+
+# # 环境变量
+# ENV RUST_LOG=info \
+#     ENV=dev \
+#     GRPC_SERVER_ENDPOINT=[::1]:8080 \
+#     TRACE_ENDPOINT=http://localhost:4318
+
+
+
+# # 暴露端口
+# EXPOSE 8080
+
+# ENTRYPOINT ["/app/mvp_server"]
+
+
 # ==============================
-# Dockerfile.server
+# Dockerfile.server (Multi-Stage Build - 针对 rdkafka)
 # ==============================
-FROM alpine:3.20
+
+# --- 阶段 1: Builder (编译阶段) ---
+# 使用 clux/muslrust 镜像。它预装了 Musl 工具链和所有静态链接 librdkafka 所需的依赖。
+# 使用特定的标签如 :1.74.0-stable 确保稳定性
+FROM clux/muslrust:1.91.1-stable-2025-11-13 AS builder
 
 # 工作目录
+WORKDIR /home/rust/src
+
+# 复制 Cargo.toml 和 Cargo.lock 以利用 Docker 缓存
+COPY Cargo.toml Cargo.lock ./
+
+# 复制所有源代码
+COPY . .
+
+# 编译应用。
+# 在 clux/muslrust 环境中，我们不再需要指定 --target x86_64-unknown-linux-musl
+# 因为这是它的默认目标，并且它使用纯 Musl 环境，避免了 glibc 冲突。
+RUN cargo build --release
+
+# --- 阶段 2: Final (最终镜像) ---
+# 使用 alpine:3.20，因为 rdkafka 在运行时可能依赖一些系统文件，如 CA 证书。
+FROM alpine:3.20
+
+# 最终镜像的工作目录
 WORKDIR /app
 
-# 从本地复制静态编译产物
-COPY /target/x86_64-unknown-linux-musl/release/mvp_server /app/mvp_server
+# 从 builder 阶段复制编译好的静态二进制文件
+# /home/rust/src/target/x86_64-unknown-linux-musl/release/mvp_server
+COPY --from=builder /home/rust/src/target/x86_64-unknown-linux-musl/release/mvp_server /app/mvp_server
+
+# 确保 Alpine 中包含运行 librdkafka 可能需要的 C 运行时库或 CA 证书
+# 虽然理论上静态链接，但加入 ca-certificates 更安全。
+RUN apk update && apk add --no-cache ca-certificates
 
 # 环境变量
 ENV RUST_LOG=info \
@@ -15,9 +67,8 @@ ENV RUST_LOG=info \
     GRPC_SERVER_ENDPOINT=[::1]:8080 \
     TRACE_ENDPOINT=http://localhost:4318
 
-
-
 # 暴露端口
 EXPOSE 8080
 
+# 启动命令
 ENTRYPOINT ["/app/mvp_server"]

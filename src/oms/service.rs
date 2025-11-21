@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
+use std::f32::consts::E;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI8;
 
+use crate::common::types::MatchFlow;
 use crate::common::{err_code, types};
 use crate::infra::kafka::ConsumerConfig;
 use crate::oms::error::OMSErr;
@@ -10,9 +13,11 @@ use crate::{
     oms::oms::{OMS, OrderBuilder},
     pbcode::oms,
 };
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
+use rdkafka::Message;
+use rdkafka::message::BorrowedMessage;
 use tokio::sync::{RwLock, mpsc, oneshot};
-use tracing::{error, instrument};
+use tracing::{error, info, instrument};
 
 // type OMSView = OMS;
 type CmdExt = CmdWrapper<Arc<oms::TradeCmd>>;
@@ -59,11 +64,14 @@ impl TradeSystem {
                 apply_thread.run().await;
             }),
         ];
-
         if let Some(cfg) = match_consumer_cfg {
-            let mut match_result_consumer = MatchResultConsumer { cfg: cfg.clone() };
+            let mut match_result_consumer = MatchResultConsumer {
+                submit_send: submit_send.clone(),
+                cfg: cfg.clone(),
+            };
+            let consumer = match_result_consumer.cfg.subscribe()?;
             handlers.push(tokio::spawn(async move {
-                let _ = match_result_consumer.run().await;
+                let _ = match_result_consumer.run(consumer).await;
             }));
         }
 
@@ -337,31 +345,88 @@ impl ApplyThread {
 }
 
 struct MatchResultConsumer {
+    submit_send: mpsc::Sender<CmdExt>,
     cfg: ConsumerConfig,
 }
 
 impl MatchResultConsumer {
-    async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let consumer = self.cfg.subscribe().map_err(|e| {
-            tracing::error!("Failed to create match result consumer: {:?}", e);
-            e
-        })?;
+    fn parse_msg(&self, msg: BorrowedMessage<'_>) -> Result<CmdExt, OMSErr> {
+        let payload = msg.payload().expect("valid payload");
+        match MatchFlow::deserialize(payload) {
+            Ok(cmd) => {
+                // check msg fields
+                if cmd.msg_types != 2 {
+                    return Err(OMSErr::new(
+                        err_code::ERR_OMS_INVALID_MATCH_FLOW,
+                        "msg_types is not MatchResult",
+                    ));
+                }
+                if cmd.match_result.is_none() {
+                    return Err(OMSErr::new(
+                        err_code::ERR_OMS_INVALID_MATCH_FLOW,
+                        "match_result is missing",
+                    ));
+                }
+                if msg.payload().is_none() {
+                    return Err(OMSErr::new(
+                        err_code::ERR_OMS_INVALID_MATCH_FLOW,
+                        "empty payload",
+                    ));
+                }
 
-        tracing::info!("MatchResultConsumer started");
-        match consumer
-            .stream()
-            .try_for_each(|msg| {
-                tracing::info!("Received match result: {:?}", msg);
-                futures::future::ok(())
-            })
-            .await
-        {
-            Ok(_) => {}
+                Ok(CmdWrapper::match_result_cmd(cmd))
+            }
             Err(e) => {
-                error!("MatchResultConsumer error: {:?}", e);
+                error!("Failed to deserialize MatchFlow: {:?}", e);
+                Err(OMSErr::new(
+                    err_code::ERR_OMS_INVALID_MATCH_FLOW,
+                    "invalid payload",
+                ))
+            }
+        }
+    }
+
+    async fn propose(&self, cmd: CmdExt) -> Result<(), OMSErr> {
+        self.submit_send.send(cmd).await.map_err(|e| {
+            tracing::error!("Failed to propose match result cmd: {:?}", e);
+            OMSErr::new(err_code::ERR_INTERNAL, "sequencer failed")
+        })
+    }
+
+    async fn run(&mut self, consumer: rdkafka::consumer::StreamConsumer) -> Result<(), OMSErr> {
+        tracing::info!("MatchResultConsumer started");
+        // todo: graceful shutdown
+        let mut stream = consumer.stream();
+        while let Some(r) = stream.next().await {
+            match r {
+                Err(e) => {
+                    error!("Kafka error: {:?}", e);
+                    continue;
+                }
+                Ok(msg) => {
+                    // process msg
+                    tracing::info!(
+                        "Received msg from (topic={}, partition={}, offset={}, ts={:?})",
+                        msg.topic(),
+                        msg.partition(),
+                        msg.offset(),
+                        msg.timestamp()
+                    );
+
+                    match self.parse_msg(msg) {
+                        Ok(c) => {
+                            self.propose(c).await?;
+                        }
+                        Err(e) => {
+                            error!("Failed to parse match result msg: {:?}", e);
+                            continue;
+                        }
+                    };
+                }
             }
         }
 
+        info!("MatchResultConsumer stopped");
         Ok(())
     }
 }
@@ -416,6 +481,13 @@ impl CmdWrapper<Arc<oms::TradeCmd>> {
             },
             rsp_recv,
         )
+    }
+
+    fn match_result_cmd(cmd: oms::TradeCmd) -> Self {
+        CmdWrapper {
+            cmd: Arc::new(cmd),
+            rsp_chan: None,
+        }
     }
 }
 

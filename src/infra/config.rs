@@ -46,7 +46,7 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    pub fn from_env() -> Self {
+    pub fn dev() -> Self {
         let mut config = Self::default();
         if let Ok(app_name) = std::env::var("APP_NAME") {
             config.app_name = app_name;
@@ -65,6 +65,14 @@ impl AppConfig {
                 _ => Env::Dev,
             }
         }
+
+        config.kafka_consumers.push(ConsumerConfig {
+            name: "match_result_consumer".to_string(),
+            bootstrap_servers: "kafka-dev:9092".to_string(),
+            topics: vec!["match_results".to_string()],
+            group_id: "oms_match_result".to_string(),
+            auto_offset_reset: "earliest".to_string(), // auto
+        });
 
         config
     }

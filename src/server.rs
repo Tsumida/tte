@@ -10,12 +10,14 @@ use trade_engine::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = AppConfig::from_env();
+    let config = AppConfig::dev();
     let _ = config.init_tracer().await?;
     config.print_args();
     let kafka_cfg = config.get_match_consumer_config();
 
     let balances = vec![
+        (1000, "BTC", -400.0),
+        (1000, "USDT", -4_000_000.0),
         (1001, "BTC", 100.0),
         (1001, "USDT", 1_000_000.0),
         (1002, "BTC", 100.0),
@@ -51,7 +53,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve(addr)
         .await?;
 
-    // todo: stream handler
     config.shutdown().await?;
     Ok(())
 }

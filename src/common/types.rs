@@ -2,6 +2,7 @@
 
 use crate::pbcode::oms::{self, BizAction};
 use getset::Getters;
+use prost::Message;
 use rust_decimal::Decimal;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -223,4 +224,14 @@ pub struct CancelOrderResult {
     pub order_state: OrderState,
 }
 
-// generate test kit for placeOrder, cancelOrder
+pub struct MatchFlow {}
+
+impl MatchFlow {
+    pub fn serialize(msg: &oms::TradeCmd) -> Vec<u8> {
+        msg.encode_to_vec()
+    }
+
+    pub fn deserialize(data: &[u8]) -> Result<oms::TradeCmd, prost::DecodeError> {
+        oms::TradeCmd::decode(data)
+    }
+}
