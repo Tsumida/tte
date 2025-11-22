@@ -3,8 +3,8 @@ use rdkafka::consumer::Consumer;
 
 #[derive(Debug, Clone, Getters)]
 pub struct ProducerConfig {
-    #[getset(get = "pub")]
-    pub name: String,
+    // #[getset(get = "pub")]
+    // pub name: String,
     #[getset(get = "pub")]
     pub bootstrap_servers: String,
     #[getset(get = "pub")]
@@ -19,7 +19,7 @@ pub struct ProducerConfig {
 impl Default for ProducerConfig {
     fn default() -> Self {
         Self {
-            name: "default_producer".to_string(),
+            // name: "default_producer".to_string(),
             bootstrap_servers: "localhost:9092".to_string(),
             topic: "default_topic".to_string(),
             acks: -1, // "all"
@@ -28,11 +28,25 @@ impl Default for ProducerConfig {
     }
 }
 
+impl ProducerConfig {
+    pub fn create_producer(
+        &self,
+    ) -> Result<rdkafka::producer::FutureProducer, rdkafka::error::KafkaError> {
+        let producer: rdkafka::producer::FutureProducer = rdkafka::config::ClientConfig::new()
+            .set("bootstrap.servers", &self.bootstrap_servers)
+            .set("acks", &self.acks.to_string())
+            .set("message.timeout.ms", &self.message_timeout_ms.to_string())
+            .create()?;
+
+        Ok(producer)
+    }
+}
+
 /// 消费者配置
 #[derive(Debug, Clone, Getters)]
 pub struct ConsumerConfig {
-    #[getset(get = "pub")]
-    pub name: String,
+    // #[getset(get = "pub")]
+    // pub name: String,
     #[getset(get = "pub")]
     pub bootstrap_servers: String,
     #[getset(get = "pub")]

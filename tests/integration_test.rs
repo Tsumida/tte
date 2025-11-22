@@ -5,7 +5,6 @@ use trade_engine::infra::kafka::{ConsumerConfig, ProducerConfig};
 
 fn dev_config() -> (ProducerConfig, ConsumerConfig) {
     let prod_cfg = ProducerConfig {
-        name: "test".to_string(),
         bootstrap_servers: "localhost:9092".to_string(),
         acks: -1, // all
         topic: "test".to_string(),
@@ -13,7 +12,6 @@ fn dev_config() -> (ProducerConfig, ConsumerConfig) {
     };
 
     let consumer_cfg = ConsumerConfig {
-        name: "test_consumer".to_string(),
         bootstrap_servers: "localhost:9092".to_string(),
         topics: vec!["test".to_string()],
         group_id: "test_group".to_string(),

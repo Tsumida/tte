@@ -91,13 +91,13 @@ message OrderDetail{
 }
 
 message AdminCmd{
-
 }
 
 message RpcCmd{
     int32 biz_action = 1; // 对应BizAction枚举
-    PlaceOrderReq place_order_req = 2; // biz_action为PlaceOrder时有效
-    CancelOrderReq cancel_order_req = 3 ; // biz_action为CancelOrder时有效
+    TradePair trade_pair = 2; // 路由字段
+    PlaceOrderReq place_order_req = 4; // biz_action为PlaceOrder时有效
+    CancelOrderReq cancel_order_req = 5 ; // biz_action为CancelOrder时有效
 }
 
 message TradeCmd{
@@ -105,13 +105,12 @@ message TradeCmd{
     uint64 prev_seq_id = 2;
     int32 msg_types = 3; // bitmask, 1表示RPC, 2表示MatchResult
     RpcCmd rpc_cmd = 4;
-    MatchResult match_result = 5;
+    BatchMatchResult match_result = 5;
 }
 
 // 撮合结果
 message MatchRecord{
-    uint64 seq_id = 1;
-    uint64 prev_seq_id = 2;
+    uint64 match_id = 1;
     string price = 3;
     string quantity = 4;
     int32 direction = 5;    // 对应Direction枚举
@@ -123,7 +122,19 @@ message MatchRecord{
 
 message MatchResult{
     Order order = 1;
-    repeated MatchRecord records = 2;
+    uint64 seq_id = 2;
+    uint64 prev_seq_id = 3;
+    repeated MatchRecord records = 4;
+}
+
+message BatchMatchRequest{
+    TradePair trade_pair = 1;
+    repeated TradeCmd cmds = 2;
+}
+
+message BatchMatchResult{
+    TradePair trade_pair = 1;
+    repeated MatchResult results = 2;
 }
 
 // ======================================== 账户类
@@ -188,6 +199,8 @@ message ReplaceOrderRsp{
 message CancelOrderReq{
     string order_id = 1;
     uint64 account_id = 2;
+    string base = 3;
+    string quote = 4;
 }
 
 message CancelOrderRsp{

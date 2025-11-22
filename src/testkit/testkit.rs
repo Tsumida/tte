@@ -69,7 +69,6 @@ pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchRes
     MatchResult {
         action: BizAction::FillOrder,
         fill_result: Some(fill_result),
-        replace_result: None,
         cancel_result: None,
     }
 }
@@ -89,7 +88,6 @@ pub fn cancel_buy_limit_order(buy: &Order) -> MatchResult {
     MatchResult {
         action: BizAction::CancelOrder,
         fill_result: None,
-        replace_result: None,
         cancel_result: Some(cancel_result),
     }
 }

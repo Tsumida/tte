@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::infra::kafka::{ConsumerConfig, ProducerConfig};
 use getset::Getters;
 use opentelemetry::{
@@ -27,9 +29,9 @@ pub struct AppConfig {
     #[getset(get = "pub")]
     env: Env,
     #[getset(get = "pub")]
-    kafka_producers: Vec<ProducerConfig>,
+    kafka_producers: HashMap<String, ProducerConfig>,
     #[getset(get = "pub")]
-    kafka_consumers: Vec<ConsumerConfig>,
+    kafka_consumers: HashMap<String, ConsumerConfig>,
 }
 
 impl Default for AppConfig {
@@ -39,8 +41,8 @@ impl Default for AppConfig {
             trace_endpoint: "http://localhost:4318".to_string(),
             grpc_server_endpoint: "[::1]:8080".to_string(),
             env: Env::Dev,
-            kafka_producers: vec![],
-            kafka_consumers: vec![],
+            kafka_producers: HashMap::new(),
+            kafka_consumers: HashMap::new(),
         }
     }
 }
@@ -66,19 +68,17 @@ impl AppConfig {
             }
         }
 
-        config.kafka_consumers.push(ConsumerConfig {
-            name: "match_result_consumer".to_string(),
-            bootstrap_servers: "kafka-dev:9092".to_string(),
-            topics: vec!["match_results".to_string()],
-            group_id: "oms_match_result".to_string(),
-            auto_offset_reset: "earliest".to_string(), // auto
-        });
-
         config
     }
 
-    pub fn get_match_consumer_config(&self) -> Option<&ConsumerConfig> {
-        self.kafka_consumers.first()
+    pub fn with_kafka_producer(&mut self, name: &str, cfg: ProducerConfig) -> &mut Self {
+        self.kafka_producers.insert(name.to_string(), cfg);
+        self
+    }
+
+    pub fn with_kafka_consumer(&mut self, name: &str, cfg: ConsumerConfig) -> &mut Self {
+        self.kafka_consumers.insert(name.to_string(), cfg);
+        self
     }
 
     pub fn print_args(&self) -> &Self {

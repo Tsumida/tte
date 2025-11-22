@@ -5,11 +5,8 @@ use getset::Getters;
 use prost::Message;
 use rust_decimal::Decimal;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TradePair {
-    pub base: String,
-    pub quote: String,
-}
+// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub type TradePair = oms::TradePair;
 
 impl TradePair {
     pub fn new(base: &str, quote: &str) -> Self {
@@ -19,28 +16,28 @@ impl TradePair {
         }
     }
 
-    fn pair(&self) -> String {
+    pub fn pair(&self) -> String {
         format!("{}{}", self.base, self.quote)
     }
 }
 
-impl From<oms::TradePair> for TradePair {
-    fn from(tp: oms::TradePair) -> Self {
-        TradePair {
-            base: tp.base,
-            quote: tp.quote,
-        }
-    }
-}
+// impl From<oms::TradePair> for TradePair {
+//     fn from(tp: oms::TradePair) -> Self {
+//         TradePair {
+//             base: tp.base,
+//             quote: tp.quote,
+//         }
+//     }
+// }
 
-impl Into<oms::TradePair> for TradePair {
-    fn into(self) -> oms::TradePair {
-        oms::TradePair {
-            base: self.base,
-            quote: self.quote,
-        }
-    }
-}
+// impl Into<oms::TradePair> for TradePair {
+//     fn into(self) -> oms::TradePair {
+//         oms::TradePair {
+//             base: self.base,
+//             quote: self.quote,
+//         }
+//     }
+// }
 
 impl ToString for TradePair {
     fn to_string(&self) -> String {
@@ -181,7 +178,7 @@ pub struct MatchRecord {
 pub struct MatchResult {
     pub action: BizAction,
     pub fill_result: Option<FillOrderResult>, // Some(_) if action == FillOrder
-    pub replace_result: Option<ReplaceOrderResult>, // Some(_) if action == ReplaceOrder
+    // pub replace_result: Option<ReplaceOrderResult>, // Some(_) if action == ReplaceOrder
     pub cancel_result: Option<CancelOrderResult>, // Some(_) if action == CancelOrder
 }
 

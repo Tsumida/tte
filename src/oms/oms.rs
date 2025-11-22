@@ -42,7 +42,18 @@ pub struct OMS {
     ledger: SpotLedger,
     client_order_map: HashMap<String, OrderID>, // client_order_id -> order_id
     last_seq_id: SeqID,                         // oms作为所有请求的sequencer
-    market_data: HashMap<TradePair, SymbolMarketData>,
+    market_data: HashMap<String, SymbolMarketData>, // trade_pair.pair() -> market data
+}
+
+pub trait OMSRpcHandler {
+    fn handle_rpc_cmd(&mut self, cmd: &oms::RpcCmd) -> Result<OMSChangeResult, OMSErr>;
+}
+
+pub trait OMSMatchResultHandler {
+    fn handle_match_result(
+        &mut self,
+        result: &oms::BatchMatchResult,
+    ) -> Result<OMSChangeResult, OMSErr>;
 }
 
 pub struct OMSChangeResult {
@@ -75,7 +86,7 @@ impl OMS {
     ) -> &mut Self {
         for (trade_pair, last_price, config) in market_data {
             self.market_data.insert(
-                trade_pair.clone(),
+                trade_pair.pair(),
                 SymbolMarketData {
                     trade_pair,
                     last_price,
@@ -87,113 +98,12 @@ impl OMS {
         self
     }
 
-    pub fn process_trade_cmd(
-        &mut self,
-        cmd: Arc<oms::TradeCmd>,
-    ) -> Result<OMSChangeResult, OMSErr> {
-        match cmd.msg_types {
-            1 => {
-                if let Some(rpc_cmd) = &cmd.rpc_cmd {
-                    self.process_rpc_cmd(rpc_cmd)
-                } else {
-                    Err(OMSErr::new(
-                        err_code::ERR_INVALID_REQUEST,
-                        "Missing rpc_cmd",
-                    ))
-                }
-            }
-            2 => {
-                if let Some(result) = &cmd.match_result {
-                    self.process_match_result(result)
-                } else {
-                    Err(OMSErr::new(
-                        err_code::ERR_INVALID_REQUEST,
-                        "Missing rpc_cmd",
-                    ))
-                }
-            }
-            _ => Err(OMSErr::new(
-                err_code::ERR_INVALID_REQUEST,
-                "Invalid msg_types",
-            )),
-        }
-    }
-
-    fn process_rpc_cmd(&mut self, cmd: &oms::RpcCmd) -> Result<OMSChangeResult, OMSErr> {
-        match BizAction::from_i32(cmd.biz_action) {
-            Some(oms::BizAction::PlaceOrder) => {
-                let req = cmd.place_order_req.as_ref().ok_or_else(|| {
-                    OMSErr::new(
-                        err_code::ERR_INVALID_REQUEST,
-                        "Missing field place_order_req",
-                    )
-                })?;
-                let order = OrderBuilder::new().build(
-                    req.order
-                        .as_ref()
-                        .ok_or_else(|| {
-                            OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field order")
-                        })?
-                        .clone(),
-                )?;
-                let total_fee = FeeCalculator {
-                    volatile_limit: Decimal::from_str(
-                        &self
-                            .market_data
-                            .get(&order.trade_pair)
-                            .ok_or_else(|| {
-                                OMSErr::new(err_code::ERR_OMS_PAIR_NOT_FOUND, "Missing market data")
-                            })?
-                            .config
-                            .volatility_limit,
-                    )
-                    .map_err(|_| {
-                        OMSErr::new(err_code::ERR_INVALID_REQUEST, "Invalid volatility limit")
-                    })?,
-                    last_price: self
-                        .market_data
-                        .get(&order.trade_pair)
-                        .ok_or_else(|| {
-                            OMSErr::new(err_code::ERR_OMS_PAIR_NOT_FOUND, "Missing market data")
-                        })?
-                        .last_price,
-                }
-                .cal(&order);
-
-                let spot_change_result = self
-                    .ledger
-                    .place_order(order, total_fee.frozen_amount)
-                    .map_err(|e| OMSErr::new(e.code(), "SpotLedgerErr"))?; // todo: 优化错误传递
-                Ok(OMSChangeResult {
-                    spot_change_result: Some(spot_change_result),
-                })
-            }
-            _ => {
-                // ignore
-                // Ok(OMSChangeResult {
-                //     spot_change_result: None,
-                // })
-                todo!()
-            }
-        }
-    }
-
-    fn process_match_result(
-        &mut self,
-        result: &oms::MatchResult,
-    ) -> Result<OMSChangeResult, OMSErr> {
-        // todo!
-        Ok(OMSChangeResult {
-            spot_change_result: None,
-        })
-    }
-
     pub fn seq_id(&self) -> SeqID {
         self.last_seq_id
     }
 
     pub fn check_place_order(&self, order: &Order) -> Result<(), OMSErr> {
-        if let Some(config) = self.market_data.get(order.trade_pair()) {
+        if let Some(config) = self.market_data.get(&order.trade_pair().pair()) {
             self.check_symbol_trading(config)?;
             self.check_price_in_range(*order.price(), config)?;
             self.check_qty(*order.target_qty(), config)?;
@@ -289,6 +199,80 @@ impl OMS {
         }
 
         Ok(())
+    }
+}
+
+impl OMSRpcHandler for OMS {
+    fn handle_rpc_cmd(&mut self, cmd: &oms::RpcCmd) -> Result<OMSChangeResult, OMSErr> {
+        match BizAction::from_i32(cmd.biz_action) {
+            Some(oms::BizAction::PlaceOrder) => {
+                let req = cmd.place_order_req.as_ref().ok_or_else(|| {
+                    OMSErr::new(
+                        err_code::ERR_INVALID_REQUEST,
+                        "Missing field place_order_req",
+                    )
+                })?;
+                let order = OrderBuilder::new().build(
+                    req.order
+                        .as_ref()
+                        .ok_or_else(|| {
+                            OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field order")
+                        })?
+                        .clone(),
+                )?;
+                let pair = &order.trade_pair.pair();
+                let total_fee = FeeCalculator {
+                    volatile_limit: Decimal::from_str(
+                        &self
+                            .market_data
+                            .get(pair)
+                            .ok_or_else(|| {
+                                OMSErr::new(err_code::ERR_OMS_PAIR_NOT_FOUND, "Missing market data")
+                            })?
+                            .config
+                            .volatility_limit,
+                    )
+                    .map_err(|_| {
+                        OMSErr::new(err_code::ERR_INVALID_REQUEST, "Invalid volatility limit")
+                    })?,
+                    last_price: self
+                        .market_data
+                        .get(pair)
+                        .ok_or_else(|| {
+                            OMSErr::new(err_code::ERR_OMS_PAIR_NOT_FOUND, "Missing market data")
+                        })?
+                        .last_price,
+                }
+                .cal(&order);
+
+                let spot_change_result = self
+                    .ledger
+                    .place_order(order, total_fee.frozen_amount)
+                    .map_err(|e| OMSErr::new(e.code(), "SpotLedgerErr"))?; // todo: 优化错误传递
+                Ok(OMSChangeResult {
+                    spot_change_result: Some(spot_change_result),
+                })
+            }
+            _ => {
+                // ignore
+                // Ok(OMSChangeResult {
+                //     spot_change_result: None,
+                // })
+                todo!()
+            }
+        }
+    }
+}
+
+impl OMSMatchResultHandler for OMS {
+    fn handle_match_result(
+        &mut self,
+        result: &oms::BatchMatchResult,
+    ) -> Result<OMSChangeResult, OMSErr> {
+        // todo!
+        Ok(OMSChangeResult {
+            spot_change_result: None,
+        })
     }
 }
 
