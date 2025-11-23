@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::{cmp::min, collections::BTreeMap};
 
-use opentelemetry::Key;
 use rust_decimal::Decimal;
 
 use crate::common::err_code;
@@ -227,7 +226,7 @@ pub(crate) trait OrderBookRequestHandler {
     ) -> Result<MatchResult, OrderBookErr>;
 }
 
-pub(crate) struct OrderBook {
+pub struct OrderBook {
     seq_id: SeqID, // last seqID had ever seen. for dedup & ignore outdated request
     match_id: MatchID,
     order_id_to_orderbook_key: HashMap<OrderID, OrderBookKey>,
@@ -606,7 +605,7 @@ impl OrderBookSnapshotHandler for OrderBook {
     }
 }
 #[derive(Debug)]
-pub(crate) struct OrderBookErr {
+pub struct OrderBookErr {
     err_code: i32,
 }
 

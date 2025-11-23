@@ -16,8 +16,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_kafka_producer(
             "match_req_BTCUSDT",
             ProducerConfig {
+                trade_pair: TradePair::new("BTC", "USDT"),
                 bootstrap_servers: "kafka-dev:9092".to_string(),
-                topic: "match_requests".to_string(),
+                topic: "match_req_BTCUSDT".to_string(),
                 acks: -1, // "all"
                 message_timeout_ms: 5000,
             },
@@ -25,8 +26,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_kafka_consumer(
             "match_result_BTCUSDT",
             ConsumerConfig {
+                trade_pair: TradePair::new("BTC", "USDT"),
                 bootstrap_servers: "kafka-dev:9092".to_string(),
-                topics: vec!["match_results".to_string()],
+                topics: vec!["match_result_BTCUSDT".to_string()],
                 group_id: "oms_match_result".to_string(),
                 auto_offset_reset: "earliest".to_string(), // auto
             },
@@ -62,11 +64,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // todo: load OMS from last snapshot
     let mut oms = OMS::new();
     oms.with_init_ledger(balances).with_market_data(market_data);
-
     let (svc, _bg_tasks) = service::TradeSystem::run_trade_system(
         oms,
-        config.kafka_producers().clone(),
-        config.kafka_consumers().clone(),
+        config
+            .kafka_producers()
+            .iter()
+            .map(|(_, v)| (v.trade_pair().clone(), v.clone()))
+            .collect(),
+        config
+            .kafka_consumers()
+            .iter()
+            .map(|(_, v)| (v.trade_pair().clone(), v.clone()))
+            .collect(),
     )
     .await?;
     // rpc handler

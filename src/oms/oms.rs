@@ -18,6 +18,7 @@ use crate::oms::error::OMSErr;
 use crate::pbcode::oms;
 use crate::pbcode::oms::BizAction;
 use crate::pbcode::oms::TimeInForce;
+use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -43,6 +44,7 @@ pub struct OMS {
     client_order_map: HashMap<String, OrderID>, // client_order_id -> order_id
     last_seq_id: SeqID,                         // oms作为所有请求的sequencer
     market_data: HashMap<String, SymbolMarketData>, // trade_pair.pair() -> market data
+    market_currencies: HashSet<String>,
 }
 
 pub trait OMSRpcHandler {
@@ -68,6 +70,7 @@ impl OMS {
             client_order_map: HashMap::new(),
             last_seq_id: 0,
             market_data: HashMap::new(),
+            market_currencies: HashSet::new(),
         }
     }
 

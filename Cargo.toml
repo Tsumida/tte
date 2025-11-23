@@ -21,6 +21,10 @@ path = "src/server.rs"
 name = "mvp_client"
 path = "src/client.rs"
 
+[[bin]]
+name = "mvp_match_engine"
+path = "src/me.rs"
+
 
 [dependencies]
 rust_decimal ={ version = "1.39" }

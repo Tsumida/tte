@@ -142,17 +142,18 @@ impl OMSCmd {
 #[derive(Debug)]
 pub struct TradeSystem {
     oms_view: Arc<RwLock<OMS>>, // read only
-    submit_send: mpsc::Sender<OMSCmd>,
+    submit_sender: mpsc::Sender<OMSCmd>,
 }
 
 impl TradeSystem {
     pub async fn run_trade_system(
         oms: OMS,
-        producer_cfgs: HashMap<String, ProducerConfig>,
-        consumer_cfgs: HashMap<String, ConsumerConfig>,
+        producer_cfgs: HashMap<TradePair, ProducerConfig>,
+        consumer_cfgs: HashMap<TradePair, ConsumerConfig>,
     ) -> Result<(Self, Vec<tokio::task::JoinHandle<()>>), Box<dyn std::error::Error>> {
         let init_seq_id = oms.seq_id();
         let chan_size = 128;
+
         let (sequencer, submit_send, commit_recv) =
             DefaultSequencer::<OMSCmd>::new(init_seq_id, chan_size);
         let shared_oms = Arc::new(RwLock::new(oms));
@@ -163,15 +164,24 @@ impl TradeSystem {
         let (match_req_sender, match_req_receiver) = match_req_chan(chan_size);
         // todo: panic if dependencies fail
         // todo: graceful shutdown
+        let svc = Self {
+            oms_view: shared_oms,
+            submit_sender: submit_send.clone(),
+        };
         let mut match_req_thread = MatchRequestSender::new(
             match_req_receiver,
-            HashMap::new(), // todo 提取
+            producer_cfgs, // todo 提取
         )
         .init()
         .await
         .expect("init success");
 
-        let mut handlers = vec![
+        let match_result_consumer = MatchResultConsumer::new(consumer_cfgs)
+            .init()
+            .await
+            .expect("match_result_consumer init");
+
+        let handlers = vec![
             // sequencer thread
             tokio::spawn(async move {
                 sequencer.run().await;
@@ -182,31 +192,15 @@ impl TradeSystem {
             }),
             // match request sender
             tokio::spawn(async move { match_req_thread.run().await }),
+            //
+            tokio::spawn(async move { match_result_consumer.run(submit_send.clone()).await }),
         ];
 
-        // todo: get all cfigs with match_req_<PAIR> & match_result_<PAIR>
-        if let Some(cfg) = consumer_cfgs.get("match_result_BTCUSDT") {
-            let mut match_result_consumer = MatchResultConsumer {
-                submit_send: submit_send.clone(),
-                cfg: cfg.clone(),
-            };
-            let consumer = match_result_consumer.cfg.subscribe()?;
-            handlers.push(tokio::spawn(async move {
-                let _ = match_result_consumer.run(consumer).await;
-            }));
-        }
-
-        Ok((
-            Self {
-                oms_view: shared_oms,
-                submit_send,
-            },
-            handlers,
-        ))
+        Ok((svc, handlers))
     }
 
     async fn propose(&self, cmd: OMSCmd) -> Result<(), OMSErr> {
-        self.submit_send.send(cmd).await.map_err(|e| {
+        self.submit_sender.send(cmd).await.map_err(|e| {
             tracing::error!("Failed to propose cmd: {:?}", e);
             OMSErr::new(err_code::ERR_INTERNAL, "sequencer failed")
         })
@@ -300,7 +294,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         let (cmd, rsp_recv) = OMSCmd::cancel_order_cmd(cancel_order_req.clone());
         let start_time = std::time::Instant::now();
         let _ =
-            self.submit_send.send(cmd).await.map_err(|e| {
+            self.submit_sender.send(cmd).await.map_err(|e| {
                 tonic::Status::internal(format!("Sequencer append failed: {:?}", e))
             })?;
 
@@ -437,6 +431,7 @@ impl ApplyThread {
             for cmd_ext in batch.drain(..) {
                 let cmd = cmd_ext.cmd;
                 // Process each cmd with the oms instance
+                // 下单改单撤单都要
                 if let Some(rpc_cmd) = &cmd.rpc_cmd {
                     results.push(oms.handle_rpc_cmd(rpc_cmd));
                     informer.push((cmd.clone(), cmd_ext.rsp_chan));
@@ -446,6 +441,7 @@ impl ApplyThread {
                 }
             }
             drop(oms); // critical: avoid deadlock
+            // sending response
             for (cmd, ch) in informer.into_iter() {
                 if ch.is_none() {
                     continue;
@@ -457,6 +453,14 @@ impl ApplyThread {
                     err: None,
                 }) {
                     tracing::error!("response channel closed for action {:?}", cmd);
+                }
+            }
+            // sending match request
+            if let Some(s) = &match_req_sender {
+                for cmd in match_req_buffer.into_iter() {
+                    if let Err(e) = s.send(cmd).await {
+                        error!("Failed to send match request: {:?}", e);
+                    }
                 }
             }
 
@@ -502,6 +506,7 @@ struct MatchRequestSender {
 }
 
 struct MatchEngineRouter {
+    topic: String,
     trade_pair: TradePair,
     producers: rdkafka::producer::FutureProducer,
 }
@@ -524,6 +529,7 @@ impl MatchRequestSender {
             self.routers.insert(
                 pair.pair(),
                 MatchEngineRouter {
+                    topic: cfg.topic().clone(),
                     trade_pair: pair.clone(),
                     producers: producer,
                 },
@@ -550,7 +556,7 @@ impl MatchRequestSender {
                 continue;
             }
             if let Some(trade_pair) = cmd.route_key() {
-                if let Err(e) = self.route(trade_pair, &cmd).await {
+                if let Err(e) = self.route_match_req(trade_pair, &cmd).await {
                     error!("Failed to route match request: {:?}", e);
                     continue;
                 }
@@ -562,7 +568,12 @@ impl MatchRequestSender {
         info!("MatchRequestSender stopped");
     }
 
-    async fn route(&self, trade_pair: &TradePair, cmd: &oms::TradeCmd) -> Result<(), OMSErr> {
+    #[instrument(level = "info", skip(self, cmd))]
+    async fn route_match_req(
+        &self,
+        trade_pair: &TradePair,
+        cmd: &oms::TradeCmd,
+    ) -> Result<(), OMSErr> {
         let pair = trade_pair.pair();
         if let Some(router) = self.routers.get(&pair) {
             let buf = MatchReqestProcesser::serialize(oms::BatchMatchRequest {
@@ -570,11 +581,17 @@ impl MatchRequestSender {
                 cmds: vec![cmd.clone()],
             });
 
+            tracing::info!(
+                "Routing match request to {}: cmd seq_id={}",
+                pair,
+                cmd.seq_id
+            );
             router
                 .producers
                 .send(
-                    rdkafka::producer::FutureRecord::to("match_requests") // todo: topic from config
+                    rdkafka::producer::FutureRecord::to(&router.topic) // todo: topic from config
                         .key(&pair)
+                        .partition(0)
                         .payload(&buf), // todo: serialize
                     std::time::Duration::from_millis(500),
                 )
@@ -589,12 +606,34 @@ impl MatchRequestSender {
 }
 
 struct MatchResultConsumer {
-    submit_send: mpsc::Sender<OMSCmd>,
-    cfg: ConsumerConfig,
+    consumer_cfgs: HashMap<TradePair, ConsumerConfig>,
+    consumers: HashMap<String, rdkafka::consumer::StreamConsumer>, // pair.pair()
 }
 
 impl MatchResultConsumer {
-    fn parse_msg(&self, msg: BorrowedMessage<'_>) -> Result<OMSCmd, OMSErr> {
+    pub fn new(consumer_cfgs: HashMap<TradePair, ConsumerConfig>) -> Self {
+        Self {
+            consumer_cfgs,
+            consumers: HashMap::new(),
+        }
+    }
+
+    pub async fn init(mut self) -> Result<Self, OMSErr> {
+        for (pair, cfg) in self.consumer_cfgs.iter_mut() {
+            let pair_str = pair.pair();
+            tracing::info!("MatchResultConsumer config ({}): {:?}", pair_str, cfg);
+            self.consumers.insert(
+                pair_str,
+                cfg.subscribe().map_err(|e| {
+                    tracing::error!("Failed to create Kafka consumer: {:?}", e);
+                    OMSErr::new(err_code::ERR_INTERNAL, "kafka consumer create failed")
+                })?,
+            );
+        }
+        Ok(self)
+    }
+
+    fn parse_msg(msg: BorrowedMessage<'_>) -> Result<OMSCmd, OMSErr> {
         let payload = msg.payload().expect("valid payload");
         match MatchFlow::deserialize(payload) {
             Ok(cmd) => {
@@ -630,47 +669,66 @@ impl MatchResultConsumer {
         }
     }
 
-    async fn propose(&self, cmd: OMSCmd) -> Result<(), OMSErr> {
-        self.submit_send.send(cmd).await.map_err(|e| {
+    async fn propose(submit_send: &mpsc::Sender<OMSCmd>, cmd: OMSCmd) -> Result<(), OMSErr> {
+        submit_send.send(cmd).await.map_err(|e| {
             tracing::error!("Failed to propose match result cmd: {:?}", e);
             OMSErr::new(err_code::ERR_INTERNAL, "sequencer failed")
         })
     }
 
-    async fn run(&mut self, consumer: rdkafka::consumer::StreamConsumer) -> Result<(), OMSErr> {
+    pub async fn run(self, submit_sender: mpsc::Sender<OMSCmd>) {
         tracing::info!("MatchResultConsumer started");
         // todo: graceful shutdown
-        let mut stream = consumer.stream();
-        while let Some(r) = stream.next().await {
-            match r {
-                Err(e) => {
-                    error!("Kafka error: {:?}", e);
-                    continue;
-                }
-                Ok(msg) => {
-                    // process msg
-                    tracing::info!(
-                        "Received msg from (topic={}, partition={}, offset={}, ts={:?})",
-                        msg.topic(),
-                        msg.partition(),
-                        msg.offset(),
-                        msg.timestamp()
-                    );
-
-                    match self.parse_msg(msg) {
-                        Ok(c) => {
-                            self.propose(c).await?;
-                        }
+        // let mut stream = consumer.stream();
+        let mut handlers = Vec::with_capacity(self.consumers.len());
+        for (pair_str, consumer) in self.consumers.into_iter() {
+            let sender = submit_sender.clone();
+            let thread_id = format!("MatchResultConsumer-{}", pair_str);
+            let h = tokio::spawn(async move {
+                tracing::info!("{} up", thread_id);
+                let mut stream = consumer.stream();
+                while let Some(r) = stream.next().await {
+                    match r {
                         Err(e) => {
-                            error!("Failed to parse match result msg: {:?}", e);
+                            error!("Kafka error: {:?}", e);
                             continue;
                         }
-                    };
+                        Ok(msg) => {
+                            // process msg
+                            tracing::info!(
+                                "Received msg from (topic={}, partition={}, offset={}, ts={:?})",
+                                msg.topic(),
+                                msg.partition(),
+                                msg.offset(),
+                                msg.timestamp()
+                            );
+
+                            match Self::parse_msg(msg) {
+                                Ok(c) => {
+                                    if let Err(e) = Self::propose(&sender, c).await {
+                                        error!(
+                                            "{}: Failed to propose match result cmd {:?}",
+                                            thread_id, e
+                                        );
+                                        continue;
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "{}: Failed to parse match result msg: {:?}",
+                                        thread_id, e
+                                    );
+                                    continue;
+                                }
+                            };
+                        }
+                    }
                 }
-            }
+            });
+            handlers.push(h);
         }
 
+        futures::future::join_all(handlers).await;
         info!("MatchResultConsumer stopped");
-        Ok(())
     }
 }
