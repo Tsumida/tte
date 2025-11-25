@@ -90,7 +90,12 @@ message OrderDetail{
     uint64 update_time = 5; // us
 }
 
-message AdminCmd{
+message OMSAdminCmd{
+    int32 admin_action = 3; 
+}
+
+message MatchAdminCmd{
+    int32 admin_action = 3; 
 }
 
 message RpcCmd{
@@ -201,6 +206,7 @@ message CancelOrderReq{
     uint64 account_id = 2;
     string base = 3;
     string quote = 4;
+    int32 direction = 5; // 对应Direction枚举
 }
 
 message CancelOrderRsp{

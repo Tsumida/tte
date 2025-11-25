@@ -1,5 +1,5 @@
 use getset::Getters;
-use rdkafka::consumer::Consumer;
+use rdkafka::{Message, consumer::Consumer, message::BorrowedMessage};
 
 use crate::pbcode::oms::TradePair;
 
@@ -70,4 +70,14 @@ impl ConsumerConfig {
 
         Ok(consumer)
     }
+}
+
+pub fn print_kafka_msg_meta(msg: &BorrowedMessage) {
+    println!(
+        "(key={:?}, topic={}, partition={}, offset={})",
+        msg.key(),
+        msg.topic(),
+        msg.partition(),
+        msg.offset()
+    );
 }

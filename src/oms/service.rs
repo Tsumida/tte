@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::common::types::{MatchFlow, TradePair};
+use crate::common::types::{TradeCmdTransfer, TradePair};
 use crate::common::{err_code, types};
-use crate::infra::kafka::{ConsumerConfig, ProducerConfig};
+use crate::infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
 use crate::oms::error::OMSErr;
 use crate::oms::oms::OMSRpcHandler;
 use crate::sequencer::api::{DefaultSequencer, SequenceSetter};
@@ -51,6 +51,10 @@ struct OMSCmd {
 
 impl SequenceSetter for OMSCmd {
     fn set_seq_id(&mut self, seq_id: u64, prev_seq_id: u64) {
+        // crtical:
+        //      此seq_id是OMS <-> ME统一，用于消息幂等和恢复。任何对OMS和ME的写操作必须和一个GlobalSeqID绑定
+        //      和MatchCmd的seq_id定位区分开。
+        // todo: 更好的设计
         Arc::get_mut(&mut self.cmd).map(|cmd| {
             cmd.seq_id = seq_id;
             cmd.prev_seq_id = prev_seq_id;
@@ -635,7 +639,7 @@ impl MatchResultConsumer {
 
     fn parse_msg(msg: BorrowedMessage<'_>) -> Result<OMSCmd, OMSErr> {
         let payload = msg.payload().expect("valid payload");
-        match MatchFlow::deserialize(payload) {
+        match TradeCmdTransfer::deserialize(payload) {
             Ok(cmd) => {
                 // check msg fields
                 if cmd.msg_types != 2 {
@@ -694,15 +698,7 @@ impl MatchResultConsumer {
                             continue;
                         }
                         Ok(msg) => {
-                            // process msg
-                            tracing::info!(
-                                "Received msg from (topic={}, partition={}, offset={}, ts={:?})",
-                                msg.topic(),
-                                msg.partition(),
-                                msg.offset(),
-                                msg.timestamp()
-                            );
-
+                            print_kafka_msg_meta(&msg);
                             match Self::parse_msg(msg) {
                                 Ok(c) => {
                                     if let Err(e) = Self::propose(&sender, c).await {

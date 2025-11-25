@@ -13,7 +13,7 @@ use crate::common::types::{
     CancelOrderResult, Direction, FillOrderResult, MatchID, MatchRecord, MatchResult, Order,
     OrderID, OrderState, OrderType, SeqID, TimeInForce,
 };
-use crate::pbcode::oms::BizAction;
+use crate::pbcode::oms::{self, BizAction, CancelOrderReq, TradeCmd};
 
 // 订单簿键
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -244,6 +244,55 @@ impl OrderBook {
             bid_orders: BTreeOrderQueue::new(Direction::Buy),
             ask_orders: BTreeOrderQueue::new(Direction::Sell),
         }
+    }
+
+    pub fn process_trade_cmd(&mut self, cmd: oms::TradeCmd) -> Result<MatchResult, OrderBookErr> {
+        if cmd.msg_types != 1 {
+            return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
+        }
+
+        if let Some(cmd) = cmd.rpc_cmd {
+            match BizAction::from_i32(cmd.biz_action) {
+                Some(BizAction::FillOrder) => {
+                    if let Some(oms::PlaceOrderReq {
+                        order: Some(place_order),
+                    }) = cmd.place_order_req
+                    {
+                        let order = Order::from_pb(place_order)
+                            .map_err(|_| OrderBookErr::new(err_code::ERR_INVALID_REQUEST))?;
+                        return self.place_order(order);
+                    } else {
+                        return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
+                    }
+                }
+                Some(BizAction::CancelOrder) => {
+                    if let Some(req) = cmd.cancel_order_req {
+                        let order_id = req.order_id;
+                        let direction = Direction::from_i32(req.direction)
+                            .ok_or(OrderBookErr::new(err_code::ERR_INVALID_REQUEST))?;
+                        return self.cancel_order(order_id, direction);
+                    } else {
+                        return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
+                    }
+                }
+                None => {
+                    return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
+                }
+                _ => {
+                    todo!();
+                }
+            }
+        } else {
+            return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
+        }
+    }
+
+    pub fn process_admin_cmd(
+        &mut self,
+        _cmd: oms::MatchAdminCmd,
+    ) -> Result<MatchResult, OrderBookErr> {
+        // todo
+        todo!()
     }
 
     // seq_id由raft模块生成

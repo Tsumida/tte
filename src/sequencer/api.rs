@@ -29,6 +29,7 @@ impl<T: Send + Sync + 'static> SequenceResult<T> {
     }
 }
 
+// todo: Input, Output用不同类型
 pub struct DefaultSequencer<T: Send + Sync + 'static> {
     seq_id: AtomicU64,
     _phantom: std::marker::PhantomData<T>,
@@ -78,7 +79,7 @@ where
                     seq_id,
                     prev_seq_id
                 );
-                // todo: batch process
+                // todo: persist cmd
                 _ = self.commit_send.send(cmd).await;
                 tracing::info!("sequencer: cmd seq_id={} sent to commit", seq_id);
             }

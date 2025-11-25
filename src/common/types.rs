@@ -114,6 +114,29 @@ impl Into<oms::Order> for Order {
     }
 }
 
+impl Order {
+    pub fn from_pb(om_order: oms::Order) -> Result<Self, Box<dyn std::error::Error>> {
+        let price = Decimal::from_str_exact(&om_order.price)?;
+        let quantity = Decimal::from_str_exact(&om_order.quantity)?;
+        Ok(Self {
+            order_id: om_order.order_id,
+            account_id: om_order.account_id,
+            client_order_id: om_order.client_order_id,
+            seq_id: om_order.seq_id,
+            prev_seq_id: om_order.prev_seq_id,
+            time_in_force: oms::TimeInForce::from_i32(om_order.time_in_force)
+                .unwrap_or(oms::TimeInForce::Gtk),
+            order_type: oms::OrderType::from_i32(om_order.order_type)
+                .unwrap_or(oms::OrderType::Limit),
+            direction: oms::Direction::from_i32(om_order.direction).unwrap_or(oms::Direction::Buy),
+            price,
+            target_qty: quantity,
+            post_only: om_order.post_only,
+            trade_pair: om_order.trade_pair.unwrap(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Getters)]
 pub struct OrderDetail {
     #[getset(get = "pub")]
@@ -221,14 +244,32 @@ pub struct CancelOrderResult {
     pub order_state: OrderState,
 }
 
-pub struct MatchFlow {}
+pub struct TradeCmdTransfer {}
 
-impl MatchFlow {
+impl TradeCmdTransfer {
     pub fn serialize(msg: &oms::TradeCmd) -> Vec<u8> {
         msg.encode_to_vec()
     }
 
     pub fn deserialize(data: &[u8]) -> Result<oms::TradeCmd, prost::DecodeError> {
         oms::TradeCmd::decode(data)
+    }
+}
+
+pub struct BatchMatchReqTransfer {}
+
+impl BatchMatchReqTransfer {
+    pub fn deserialize(data: &[u8]) -> Result<oms::BatchMatchRequest, prost::DecodeError> {
+        oms::BatchMatchRequest::decode(data)
+    }
+}
+
+pub struct BatchMatchResultTransfer {}
+
+impl BatchMatchResultTransfer {
+    pub fn serialize(msg: &oms::BatchMatchResult) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut buf = Vec::with_capacity(msg.encoded_len());
+        msg.encode(&mut buf)?;
+        Ok(buf)
     }
 }
