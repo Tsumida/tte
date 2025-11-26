@@ -83,30 +83,26 @@ pub struct RpcCmd {
     /// 对应BizAction枚举
     #[prost(int32, tag = "1")]
     pub biz_action: i32,
-    /// 路由字段
-    #[prost(message, optional, tag = "2")]
-    pub trade_pair: ::core::option::Option<TradePair>,
     /// biz_action为PlaceOrder时有效
-    #[prost(message, optional, tag = "4")]
+    #[prost(message, optional, tag = "2")]
     pub place_order_req: ::core::option::Option<PlaceOrderReq>,
     /// biz_action为CancelOrder时有效
-    #[prost(message, optional, tag = "5")]
+    #[prost(message, optional, tag = "3")]
     pub cancel_order_req: ::core::option::Option<CancelOrderReq>,
 }
+/// 用户发起的交易指令, 经过OMS处理后转发给撮合引擎
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TradeCmd {
     #[prost(uint64, tag = "1")]
-    pub seq_id: u64,
+    pub trade_id: u64,
     #[prost(uint64, tag = "2")]
-    pub prev_seq_id: u64,
-    /// bitmask, 1表示RPC, 2表示MatchResult
-    #[prost(int32, tag = "3")]
-    pub msg_types: i32,
+    pub prev_trade_id: u64,
+    /// 路由字段
+    #[prost(message, optional, tag = "3")]
+    pub trade_pair: ::core::option::Option<TradePair>,
     #[prost(message, optional, tag = "4")]
     pub rpc_cmd: ::core::option::Option<RpcCmd>,
-    #[prost(message, optional, tag = "5")]
-    pub match_result: ::core::option::Option<BatchMatchResult>,
 }
 /// 撮合结果
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -114,6 +110,8 @@ pub struct TradeCmd {
 pub struct MatchRecord {
     #[prost(uint64, tag = "1")]
     pub match_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub prev_match_id: u64,
     #[prost(string, tag = "3")]
     pub price: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
@@ -129,16 +127,28 @@ pub struct MatchRecord {
     pub is_taker_fulfilled: bool,
     #[prost(bool, tag = "9")]
     pub is_maker_fulfilled: bool,
+    #[prost(message, optional, tag = "10")]
+    pub trade_pair: ::core::option::Option<TradePair>,
+    #[prost(uint64, tag = "11")]
+    pub taker_account_id: u64,
+    #[prost(uint64, tag = "12")]
+    pub maker_account_id: u64,
+    /// 对应OrderState枚举
+    #[prost(int32, tag = "13")]
+    pub taker_state: i32,
+    /// 对应OrderState枚举
+    #[prost(int32, tag = "14")]
+    pub maker_state: i32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MatchResult {
-    #[prost(message, optional, tag = "1")]
-    pub order: ::core::option::Option<Order>,
+    #[prost(uint64, tag = "1")]
+    pub trade_id: u64,
     #[prost(uint64, tag = "2")]
-    pub seq_id: u64,
-    #[prost(uint64, tag = "3")]
-    pub prev_seq_id: u64,
+    pub prev_trade_id: u64,
+    #[prost(message, optional, tag = "3")]
+    pub order: ::core::option::Option<Order>,
     #[prost(message, repeated, tag = "4")]
     pub records: ::prost::alloc::vec::Vec<MatchRecord>,
 }
@@ -229,15 +239,6 @@ pub struct PlaceOrderReq {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlaceOrderRsp {}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReplaceOrderReq {
-    #[prost(message, optional, tag = "1")]
-    pub cmd: ::core::option::Option<ReplaceOrderCmd>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReplaceOrderRsp {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelOrderReq {

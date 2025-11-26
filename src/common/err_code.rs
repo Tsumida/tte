@@ -23,7 +23,8 @@ pub static ERR_OMS_DUPLICATE_PLACE: i32 = 100204; // 重复下单
 pub static ERR_OMS_PAIR_NOT_FOUND: i32 = 100205; // 交易对未找到
 pub static ERR_OMS_ORDER_NOT_FOUND: i32 = 100206; // 订单未找到
 pub static ERR_OMS_ACCOUNT_NOT_FOUND: i32 = 100207; // 账户未找到
-pub static ERR_OMS_INVALID_MATCH_FLOW: i32 = 100208; // 撮合返回数据无法解析
+pub static ERR_OMS_INVALID_MATCH_RESULT: i32 = 100208; // 撮合返回数据无法解析
+pub static ERR_OMS_MATCH_RESULT_FAILED: i32 = 100209; // 撮合结果处理失败, 需要介入处理
 
 pub static ERR_LEDGER_INSUFFICIENT_BALANCE: i32 = 100301; // 余额不足
 pub static ERR_LEDGER_INVALID_ACCOUNT: i32 = 100302; // 无效账户

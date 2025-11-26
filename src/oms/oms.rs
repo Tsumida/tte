@@ -4,8 +4,10 @@
 
 #![allow(dead_code)]
 
+use getset::Getters;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use tracing::error;
 
 use crate::common::err_code;
 use crate::common::err_code::TradeEngineErr;
@@ -13,15 +15,16 @@ use crate::common::id::IDGenerator;
 use crate::common::types::*;
 use crate::ledger::spot;
 use crate::ledger::spot::SpotLedger;
+use crate::ledger::spot::SpotLedgerMatchResultConsumer;
 use crate::ledger::spot::SpotLedgerRPCHandler;
 use crate::oms::error::OMSErr;
 use crate::pbcode::oms;
 use crate::pbcode::oms::BizAction;
 use crate::pbcode::oms::TimeInForce;
+use std::cmp::max;
 use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct AccountOrderList {
@@ -37,29 +40,69 @@ struct SymbolMarketData {
     last_match_id: MatchID, // oms接受match_result, 用于过滤已处理的match_id
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Getters)]
 pub struct OMS {
     active_orders: BTreeMap<u64, AccountOrderList>, // account_id -> bid \ ask orders
     ledger: SpotLedger,
     client_order_map: HashMap<String, OrderID>, // client_order_id -> order_id
-    last_seq_id: SeqID,                         // oms作为所有请求的sequencer
+    // last_seq_id: SeqID,                         // oms作为所有请求的sequencer
     market_data: HashMap<String, SymbolMarketData>, // trade_pair.pair() -> market data
     market_currencies: HashSet<String>,
+    #[getset(get = "pub")]
+    id_manager: IDManager,
+}
+
+#[derive(Debug, Clone, Default, Getters)]
+pub struct IDManager {
+    #[getset(get = "pub")]
+    trade_id: u64,
+    #[getset(get = "pub")]
+    admin_id: u64,
+    #[getset(get = "pub")]
+    ledger_id: u64,
+}
+
+impl IDManager {
+    pub fn advance_trade_id(&mut self, seq_id: u64) -> u64 {
+        self.trade_id = max(self.trade_id, seq_id);
+        self.trade_id
+    }
+
+    pub fn advance_admin_id(&mut self, seq_id: u64) -> u64 {
+        self.admin_id = max(self.admin_id, seq_id);
+        self.admin_id
+    }
+
+    pub fn advance_ledger_id(&mut self, seq_id: u64) -> u64 {
+        self.ledger_id = max(self.ledger_id, seq_id);
+        self.ledger_id
+    }
 }
 
 pub trait OMSRpcHandler {
-    fn handle_rpc_cmd(&mut self, cmd: &oms::RpcCmd) -> Result<OMSChangeResult, OMSErr>;
-}
-
-pub trait OMSMatchResultHandler {
-    fn handle_match_result(
+    fn handle_rpc_cmd(
         &mut self,
-        result: &oms::BatchMatchResult,
+        current_seq_id: u64,
+        trade_pair: &TradePair,
+        cmd: oms::RpcCmd,
     ) -> Result<OMSChangeResult, OMSErr>;
 }
 
+pub trait OMSMatchResultHandler {
+    fn handle_match_result(&mut self, record: oms::MatchRecord) -> Result<OMSChangeResult, OMSErr>;
+}
+
+#[derive(Getters)]
 pub struct OMSChangeResult {
-    pub spot_change_result: Option<spot::SpotChangeResult>,
+    #[getset(get = "pub")]
+    // 对账本的状态更新
+    pub spot_change_result: Vec<Result<spot::SpotChangeResult, OMSErr>>,
+
+    // pub order_event: Vec<OrderEvent>,
+    #[getset(get = "pub")]
+    // 需要转发给撮合器的请求
+    // note：ReplaceOrder会依次生成Cancel\Place请求
+    pub match_request: Option<oms::BatchMatchRequest>,
 }
 
 impl OMS {
@@ -68,9 +111,10 @@ impl OMS {
             active_orders: BTreeMap::new(),
             ledger: SpotLedger::new(),
             client_order_map: HashMap::new(),
-            last_seq_id: 0,
+            // last_seq_id: 0,
             market_data: HashMap::new(),
             market_currencies: HashSet::new(),
+            id_manager: IDManager::default(),
         }
     }
 
@@ -102,7 +146,7 @@ impl OMS {
     }
 
     pub fn seq_id(&self) -> SeqID {
-        self.last_seq_id
+        self.id_manager.trade_id
     }
 
     pub fn check_place_order(&self, order: &Order) -> Result<(), OMSErr> {
@@ -206,23 +250,24 @@ impl OMS {
 }
 
 impl OMSRpcHandler for OMS {
-    fn handle_rpc_cmd(&mut self, cmd: &oms::RpcCmd) -> Result<OMSChangeResult, OMSErr> {
+    fn handle_rpc_cmd(
+        &mut self,
+        current_seq_id: u64,
+        trade_pair: &TradePair,
+        cmd: oms::RpcCmd,
+    ) -> Result<OMSChangeResult, OMSErr> {
         match BizAction::from_i32(cmd.biz_action) {
             Some(oms::BizAction::PlaceOrder) => {
-                let req = cmd.place_order_req.as_ref().ok_or_else(|| {
+                let req = cmd.place_order_req.ok_or_else(|| {
                     OMSErr::new(
                         err_code::ERR_INVALID_REQUEST,
                         "Missing field place_order_req",
                     )
                 })?;
-                let order = OrderBuilder::new().build(
-                    req.order
-                        .as_ref()
-                        .ok_or_else(|| {
-                            OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field order")
-                        })?
-                        .clone(),
-                )?;
+                let req_order = req.order.ok_or_else(|| {
+                    OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field order")
+                })?;
+                let order = OrderBuilder::new().build(req_order)?;
                 let pair = &order.trade_pair.pair();
                 let total_fee = FeeCalculator {
                     volatile_limit: Decimal::from_str(
@@ -253,28 +298,61 @@ impl OMSRpcHandler for OMS {
                     .place_order(order, total_fee.frozen_amount)
                     .map_err(|e| OMSErr::new(e.code(), "SpotLedgerErr"))?; // todo: 优化错误传递
                 Ok(OMSChangeResult {
-                    spot_change_result: Some(spot_change_result),
+                    spot_change_result: vec![Ok(spot_change_result)],
+                    match_request: None,
                 })
             }
-            _ => {
-                // ignore
-                // Ok(OMSChangeResult {
-                //     spot_change_result: None,
-                // })
-                todo!()
+            Some(BizAction::CancelOrder) => {
+                let prev_trade_id = self.id_manager.trade_id().clone();
+                let trade_id = self.id_manager.advance_trade_id(current_seq_id);
+                Ok(OMSChangeResult {
+                    spot_change_result: vec![],
+                    match_request: Some(oms::BatchMatchRequest {
+                        trade_pair: Some(trade_pair.clone()),
+                        cmds: vec![oms::TradeCmd {
+                            trade_id,
+                            prev_trade_id,
+                            trade_pair: Some(trade_pair.clone()),
+                            rpc_cmd: Some(oms::RpcCmd {
+                                biz_action: oms::BizAction::CancelOrder as i32,
+                                place_order_req: None,
+                                cancel_order_req: cmd.cancel_order_req,
+                            }),
+                        }],
+                    }),
+                })
             }
+            _ => Err(OMSErr::new(
+                err_code::ERR_INVALID_REQUEST,
+                "Unsupported biz_action",
+            )),
         }
     }
 }
 
 impl OMSMatchResultHandler for OMS {
-    fn handle_match_result(
-        &mut self,
-        result: &oms::BatchMatchResult,
-    ) -> Result<OMSChangeResult, OMSErr> {
+    fn handle_match_result(&mut self, record: oms::MatchRecord) -> Result<OMSChangeResult, OMSErr> {
+        let mr = MatchRecord::from(record);
+        let match_id = mr.match_id;
+        // note: 一条成交会更新两个账户，因此生成多个SpotChangeResult。需要合并返回吧你
+        let spot_events = self
+            .ledger
+            .fill_order(&mr)
+            .map_err(|e| {
+                error!("match_id={}, err={}", match_id, e);
+                OMSErr::new(
+                    err_code::ERR_OMS_MATCH_RESULT_FAILED,
+                    "match_result processing failed",
+                )
+            })?
+            .into_iter()
+            .map(|e| Ok(e))
+            .collect::<Vec<Result<spot::SpotChangeResult, OMSErr>>>();
+
         // todo!
         Ok(OMSChangeResult {
-            spot_change_result: None,
+            spot_change_result: spot_events,
+            match_request: None,
         })
     }
 }

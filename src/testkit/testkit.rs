@@ -40,8 +40,6 @@ pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchRes
 
     // 第一次成交 0.5 BTC
     match_records.push(MatchRecord {
-        seq_id: 2,
-        prev_seq_id: 1,
         match_id: 1,
         prev_match_id: 0,
         price: sell.price,

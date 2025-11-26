@@ -179,8 +179,8 @@ impl Into<oms::OrderDetail> for &OrderDetail {
 // 撮合结果结构体
 #[derive(Debug, Clone)]
 pub struct MatchRecord {
-    pub seq_id: SeqID,
-    pub prev_seq_id: SeqID,
+    // pub seq_id: SeqID,
+    // pub prev_seq_id: SeqID,
     pub match_id: MatchID,
     pub prev_match_id: MatchID,
     pub price: Decimal,
@@ -195,6 +195,27 @@ pub struct MatchRecord {
     pub is_taker_fulfilled: bool,
     pub is_maker_fulfilled: bool,
     pub trade_pair: TradePair,
+}
+
+impl From<oms::MatchRecord> for MatchRecord {
+    fn from(mr: oms::MatchRecord) -> Self {
+        MatchRecord {
+            match_id: mr.match_id,
+            prev_match_id: mr.prev_match_id,
+            price: Decimal::from_str_exact(&mr.price).unwrap_or(Decimal::new(0, 0)),
+            qty: Decimal::from_str_exact(&mr.quantity).unwrap_or(Decimal::new(0, 0)),
+            direction: oms::Direction::from_i32(mr.direction).unwrap_or(oms::Direction::Buy),
+            taker_order_id: mr.taker_order_id,
+            taker_account_id: mr.taker_account_id,
+            taker_state: oms::OrderState::from_i32(mr.taker_state).unwrap_or(oms::OrderState::New),
+            maker_order_id: mr.maker_order_id,
+            maker_account_id: mr.maker_account_id,
+            maker_state: oms::OrderState::from_i32(mr.maker_state).unwrap_or(oms::OrderState::New),
+            is_taker_fulfilled: mr.is_taker_fulfilled,
+            is_maker_fulfilled: mr.is_maker_fulfilled,
+            trade_pair: mr.trade_pair.unwrap(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -271,5 +292,9 @@ impl BatchMatchResultTransfer {
         let mut buf = Vec::with_capacity(msg.encoded_len());
         msg.encode(&mut buf)?;
         Ok(buf)
+    }
+
+    pub fn deserialize(data: &[u8]) -> Result<oms::BatchMatchResult, prost::DecodeError> {
+        oms::BatchMatchResult::decode(data)
     }
 }

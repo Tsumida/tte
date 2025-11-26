@@ -1,17 +1,14 @@
 //#![allow(dead_code)]
 #![deny(clippy::unwrap_used)]
 
-use std::{collections::HashMap, f32::consts::E};
+use std::collections::HashMap;
 
 use rdkafka::Message;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{info, instrument};
 
 use crate::{
-    common::{
-        err_code,
-        types::{BatchMatchReqTransfer, BatchMatchResultTransfer, MatchResult, TradePair},
-    },
+    common::types::{BatchMatchReqTransfer, BatchMatchResultTransfer, MatchResult, TradePair},
     infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta},
     match_engine::orderbook::{OrderBook, OrderBookErr},
     pbcode::oms,

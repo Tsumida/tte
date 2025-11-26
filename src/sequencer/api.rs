@@ -115,31 +115,3 @@ where
         Ok(results)
     }
 }
-
-// #[derive(Debug)]
-// struct SequenceCmd<T: Send + Sync + 'static> {
-//     cmd: Arc<T>,
-//     rsp_chan: Option<oneshot::Sender<Result<Arc<T>, String>>>,
-// }
-
-// unsafe impl<T: Send + Sync + 'static> Sync for TradeCmdExt<T> {}
-// unsafe impl<T: Send + Sync + 'static> Send for TradeCmdExt<T> {}
-
-// impl<T: Send + Sync + 'static> TradeCmdExt<T> {
-//     pub fn place_order_cmd(
-//         place_order_req: oms::PlaceOrderReq,
-//         rsp_chan: oneshot::Sender<Result<T, String>>,
-//     ) -> Self {
-//         TradeCmdExt {
-//             cmd: oms::TradeCmd {
-//                 seq_id: 0,
-//                 prev_seq_id: 0,
-//                 biz_action: oms::BizAction::PlaceOrder as i32,
-//                 place_order_req: Some(T),
-//                 cancel_order_req: None,
-//                 admin_cmd: None,
-//             },
-//             rsp_chan: Some(rsp_chan),
-//         }
-//     }
-// }

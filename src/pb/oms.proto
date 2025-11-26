@@ -100,22 +100,38 @@ message MatchAdminCmd{
 
 message RpcCmd{
     int32 biz_action = 1; // 对应BizAction枚举
-    TradePair trade_pair = 2; // 路由字段
-    PlaceOrderReq place_order_req = 4; // biz_action为PlaceOrder时有效
-    CancelOrderReq cancel_order_req = 5 ; // biz_action为CancelOrder时有效
+    PlaceOrderReq place_order_req = 2; // biz_action为PlaceOrder时有效
+    CancelOrderReq cancel_order_req = 3 ; // biz_action为CancelOrder时有效
 }
 
+// 用户发起的交易指令, 经过OMS处理后转发给撮合引擎
 message TradeCmd{
-    uint64 seq_id = 1;
-    uint64 prev_seq_id = 2;
-    int32 msg_types = 3; // bitmask, 1表示RPC, 2表示MatchResult
+    uint64 trade_id = 1;
+    uint64 prev_trade_id = 2;
+    TradePair trade_pair = 3; // 路由字段
     RpcCmd rpc_cmd = 4;
-    BatchMatchResult match_result = 5;
 }
 
 // 撮合结果
 message MatchRecord{
+
+    //     pub match_id: MatchID,
+    // pub prev_match_id: MatchID,
+    // pub price: Decimal,
+    // pub qty: Decimal,
+    // pub direction: Direction,
+    // pub taker_order_id: OrderID,
+    // pub taker_account_id: u64,
+    // pub taker_state: OrderState,
+    // pub maker_order_id: OrderID,
+    // pub maker_account_id: u64,
+    // pub maker_state: OrderState,
+    // pub is_taker_fulfilled: bool,
+    // pub is_maker_fulfilled: bool,
+    // pub trade_pair: TradePair,
+
     uint64 match_id = 1;
+    uint64 prev_match_id = 2;
     string price = 3;
     string quantity = 4;
     int32 direction = 5;    // 对应Direction枚举
@@ -123,12 +139,17 @@ message MatchRecord{
     string maker_order_id = 7;
     bool is_taker_fulfilled = 8;
     bool is_maker_fulfilled = 9;
+    TradePair trade_pair = 10;
+    uint64 taker_account_id = 11;    
+    uint64 maker_account_id = 12;
+    int32 taker_state = 13; // 对应OrderState枚举
+    int32 maker_state = 14; // 对应OrderState枚举
 }
 
 message MatchResult{
-    Order order = 1;
-    uint64 seq_id = 2;
-    uint64 prev_seq_id = 3;
+    uint64 trade_id = 1;
+    uint64 prev_trade_id = 2;
+    Order order = 3;
     repeated MatchRecord records = 4;
 }
 
@@ -192,13 +213,6 @@ message PlaceOrderReq{
 }
 
 message PlaceOrderRsp{
-}
-
-message ReplaceOrderReq{    
-    ReplaceOrderCmd cmd = 1;
-}
-
-message ReplaceOrderRsp{
 }
 
 message CancelOrderReq{

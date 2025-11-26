@@ -6,14 +6,15 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::{cmp::min, collections::BTreeMap};
 
+use getset::Getters;
 use rust_decimal::Decimal;
 
 use crate::common::err_code;
 use crate::common::types::{
-    CancelOrderResult, Direction, FillOrderResult, MatchID, MatchRecord, MatchResult, Order,
-    OrderID, OrderState, OrderType, SeqID, TimeInForce,
+    CancelOrderResult, Direction, FillOrderResult, MatchRecord, MatchResult, Order, OrderID,
+    OrderState, OrderType, SeqID, TimeInForce,
 };
-use crate::pbcode::oms::{self, BizAction, CancelOrderReq, TradeCmd};
+use crate::pbcode::oms::{self, BizAction};
 
 // 订单簿键
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -203,7 +204,7 @@ pub struct OrderBookSnapshot {
     bid_orders: Vec<MakerOrder>,
     ask_orders: Vec<MakerOrder>,
     last_seq_id: u64,
-    last_match_id: u64,
+    id_manager: IDManager,
 }
 
 pub(crate) trait OrderBookSnapshotHandler {
@@ -226,9 +227,28 @@ pub(crate) trait OrderBookRequestHandler {
     ) -> Result<MatchResult, OrderBookErr>;
 }
 
+#[derive(Debug, Clone, Getters, Default)]
+struct IDManager {
+    #[getset(get = "pub")]
+    match_id: u64,
+}
+
+impl IDManager {
+    pub fn new(init_match_id: u64) -> Self {
+        Self {
+            match_id: init_match_id,
+        }
+    }
+
+    fn advance_match_id(&mut self) -> u64 {
+        self.match_id += 1;
+        self.match_id
+    }
+}
+
 pub struct OrderBook {
     seq_id: SeqID, // last seqID had ever seen. for dedup & ignore outdated request
-    match_id: MatchID,
+    id_manager: IDManager,
     order_id_to_orderbook_key: HashMap<OrderID, OrderBookKey>,
     bid_orders: BTreeOrderQueue,
     ask_orders: BTreeOrderQueue,
@@ -239,7 +259,7 @@ impl OrderBook {
     pub fn new() -> Self {
         Self {
             seq_id: 0,
-            match_id: 0,
+            id_manager: IDManager::default(),
             order_id_to_orderbook_key: HashMap::new(),
             bid_orders: BTreeOrderQueue::new(Direction::Buy),
             ask_orders: BTreeOrderQueue::new(Direction::Sell),
@@ -247,10 +267,6 @@ impl OrderBook {
     }
 
     pub fn process_trade_cmd(&mut self, cmd: oms::TradeCmd) -> Result<MatchResult, OrderBookErr> {
-        if cmd.msg_types != 1 {
-            return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
-        }
-
         if let Some(cmd) = cmd.rpc_cmd {
             match BizAction::from_i32(cmd.biz_action) {
                 Some(BizAction::FillOrder) => {
@@ -356,7 +372,6 @@ impl OrderBook {
         } else {
             (&mut self.ask_orders, &mut self.bid_orders)
         };
-        let mut new_match_id = self.match_id;
 
         if let Some((mut maker_key, mut maker)) = adversary_q.peek() {
             // keep fill until:
@@ -378,11 +393,11 @@ impl OrderBook {
                     maker.qty_info.remain_qty,
                 );
                 match_keys.push(maker_key);
+                let prev_match_id = self.id_manager.match_id().clone();
+                let match_id = self.id_manager.advance_match_id();
                 results.push(MatchRecord {
-                    seq_id: taker.order.seq_id,
-                    prev_seq_id: taker.order.prev_seq_id,
-                    match_id: new_match_id + 1,
-                    prev_match_id: new_match_id,
+                    match_id: match_id,
+                    prev_match_id: prev_match_id,
                     price: maker.order.price,
                     qty: filled_qty,
                     direction: taker.order.direction,
@@ -404,7 +419,6 @@ impl OrderBook {
                     maker_account_id: maker.order.account_id,
                     trade_pair: taker.order.trade_pair.clone(),
                 });
-                new_match_id += 1;
                 total_filled_qty += filled_qty;
                 if let Some((k, v)) = adversary_q.next(&maker_key) {
                     maker_key = k;
@@ -621,7 +635,7 @@ impl OrderBookSnapshotHandler for OrderBook {
             bid_orders: self.bid_orders.take_queue_snapshot(),
             ask_orders: self.ask_orders.take_queue_snapshot(),
             last_seq_id: self.seq_id,
-            last_match_id: self.match_id,
+            id_manager: self.id_manager.clone(),
         })
     }
 
@@ -646,7 +660,7 @@ impl OrderBookSnapshotHandler for OrderBook {
 
         Ok(OrderBook {
             seq_id: s.last_seq_id,
-            match_id: s.last_match_id,
+            id_manager: s.id_manager,
             order_id_to_orderbook_key: order_id_to_key,
             bid_orders,
             ask_orders,
