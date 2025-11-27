@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use rdkafka::Message;
 use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::{info, instrument};
+use tracing::{error, info, instrument};
 
 use crate::{
     common::types::{BatchMatchReqTransfer, BatchMatchResultTransfer, MatchResult, TradePair},
@@ -269,13 +269,17 @@ impl ApplyThread {
                 )),
             }
         }
-        self.match_result_sender
+        // note: 基本上不可能; 即使发生可以通过重放恢复
+        if let Err(e) = self
+            .match_result_sender
             .send(CmdWrapper::new(oms::BatchMatchResult {
                 trade_pair: batch_match_req.trade_pair.clone(),
                 results: match_result_buffer,
             }))
             .await
-            .expect("send match result");
+        {
+            error!("send match result error: {}", e);
+        }
     }
 }
 

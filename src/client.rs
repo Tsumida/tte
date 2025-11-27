@@ -93,8 +93,8 @@ async fn call(line: String) -> Result<(), Box<dyn std::error::Error>> {
                 },
                 stp_strategy,
                 post_only,
-                seq_id: 0,
-                prev_seq_id: 0,
+                trade_id: 0,
+                prev_trade_id: 0,
                 create_time: create_ts_us.to_string(),
             }),
         })

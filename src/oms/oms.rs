@@ -44,8 +44,8 @@ struct SymbolMarketData {
 pub struct OMS {
     active_orders: BTreeMap<u64, AccountOrderList>, // account_id -> bid \ ask orders
     ledger: SpotLedger,
+    // todo: 考虑基于定时器的缓存, 防止重复使用同一个client_order_id
     client_order_map: HashMap<String, OrderID>, // client_order_id -> order_id
-    // last_seq_id: SeqID,                         // oms作为所有请求的sequencer
     market_data: HashMap<String, SymbolMarketData>, // trade_pair.pair() -> market data
     market_currencies: HashSet<String>,
     #[getset(get = "pub")]
@@ -79,6 +79,7 @@ impl IDManager {
     }
 }
 
+// 根据交易指令更新OMS的Ledger、活跃订单状态
 pub trait OMSRpcHandler {
     fn handle_rpc_cmd(
         &mut self,
@@ -88,8 +89,14 @@ pub trait OMSRpcHandler {
     ) -> Result<OMSChangeResult, OMSErr>;
 }
 
+// 根据撮合结果更新OMS的Ledger、活跃订单状态. 不处理失败的撮合结果
 pub trait OMSMatchResultHandler {
-    fn handle_match_result(&mut self, record: oms::FillRecord) -> Result<OMSChangeResult, OMSErr>;
+    fn handle_success_fill(&mut self, record: &oms::FillRecord) -> Result<OMSChangeResult, OMSErr>;
+
+    fn handle_success_cancel(
+        &mut self,
+        result: &oms::CancelResult,
+    ) -> Result<OMSChangeResult, OMSErr>;
 }
 
 #[derive(Getters)]
@@ -247,6 +254,53 @@ impl OMS {
 
         Ok(())
     }
+
+    fn remove_order(
+        &mut self,
+        direction: Direction,
+        account_id: u64,
+        order_id: &str,
+    ) -> Result<(), OMSErr> {
+        // self.check_client_order_id(client_order_id)?;
+        if let Some(orders) = self.active_orders.get_mut(&account_id) {
+            let order_map = match direction {
+                Direction::Buy => &mut orders.bid_orders,
+                Direction::Sell => &mut orders.ask_orders,
+                _ => unreachable!(),
+            };
+            match order_map.remove(order_id) {
+                Some(filled_order) => {
+                    let client_order_id = filled_order.original().client_order_id();
+                    self.client_order_map.remove(client_order_id);
+                    return Ok(());
+                }
+                None => {
+                    return Err(OMSErr::new(
+                        err_code::ERR_OMS_ORDER_NOT_FOUND,
+                        "Order not found",
+                    ));
+                }
+            }
+        }
+        Err(OMSErr::new(
+            err_code::ERR_OMS_ORDER_NOT_FOUND,
+            "Order not found",
+        ))
+    }
+
+    fn try_remove_filled_order(
+        &mut self,
+        direction: Direction,
+        record: &oms::FillRecord,
+    ) -> Result<(), OMSErr> {
+        if record.is_maker_fulfilled {
+            self.remove_order(direction, record.maker_account_id, &record.maker_order_id)?;
+        }
+        if record.is_taker_fulfilled {
+            self.remove_order(direction, record.taker_account_id, &record.taker_order_id)?;
+        }
+        Ok(())
+    }
 }
 
 impl OMSRpcHandler for OMS {
@@ -331,10 +385,14 @@ impl OMSRpcHandler for OMS {
 }
 
 impl OMSMatchResultHandler for OMS {
-    fn handle_match_result(&mut self, record: oms::FillRecord) -> Result<OMSChangeResult, OMSErr> {
-        let mr = MatchRecord::from(record);
+    fn handle_success_fill(&mut self, record: &oms::FillRecord) -> Result<OMSChangeResult, OMSErr> {
+        let mr = FillRecord::from(record);
         let match_id = mr.match_id;
-        // note: 一条成交会更新两个账户，因此生成多个SpotChangeResult。需要合并返回吧你
+
+        // 更新order状态
+        let _ = self.try_remove_filled_order(mr.direction, record);
+
+        // 更新ledger状态
         let spot_events = self
             .ledger
             .fill_order(&mr)
@@ -352,6 +410,34 @@ impl OMSMatchResultHandler for OMS {
         // todo!
         Ok(OMSChangeResult {
             spot_change_result: spot_events,
+            match_request: None,
+        })
+    }
+
+    fn handle_success_cancel(
+        &mut self,
+        result: &oms::CancelResult,
+    ) -> Result<OMSChangeResult, OMSErr> {
+        let record = CancelOrderResult::from(result); // todo: error handling
+        if result.order_state == OrderState::Cancelled as i32 {
+            // 更新订单状态
+            self.remove_order(record.direction, record.account_id, &record.order_id)?;
+
+            // 更新账本状态
+            self.ledger.cancel_order(&record).map_err(|e| {
+                error!(
+                    "cancel_order failed: account_id={}, order_id={}, err={}",
+                    record.account_id, record.order_id, e
+                );
+                OMSErr::new(
+                    err_code::ERR_OMS_MATCH_RESULT_FAILED,
+                    "cancel_result processing failed",
+                )
+            })?;
+        }
+
+        Ok(OMSChangeResult {
+            spot_change_result: vec![],
             match_request: None,
         })
     }
@@ -385,8 +471,8 @@ impl OrderBuilder {
                 .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "Invalid quantity"))?,
             post_only: order.post_only,
             order_type: OrderType::from_i32(order.order_type).unwrap(),
-            seq_id: order.seq_id,
-            prev_seq_id: order.prev_seq_id,
+            trade_id: order.trade_id,
+            prev_trade_id: order.prev_trade_id,
             time_in_force: TimeInForce::from_i32(order.time_in_force).unwrap(),
         })
     }

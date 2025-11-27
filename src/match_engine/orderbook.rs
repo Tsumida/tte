@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 
 use crate::common::err_code;
 use crate::common::types::{
-    CancelOrderResult, Direction, FillOrderResult, MatchRecord, MatchResult, Order, OrderID,
+    CancelOrderResult, Direction, FillOrderResult, FillRecord, MatchResult, Order, OrderID,
     OrderState, OrderType, SeqID, TimeInForce,
 };
 use crate::pbcode::oms::{self, BizAction};
@@ -189,7 +189,7 @@ impl From<Vec<MakerOrder>> for BTreeOrderQueue {
                     direction,
                     OrderBookKey {
                         price: v.order.price,
-                        seq_id: v.order.seq_id,
+                        seq_id: v.order.trade_id,
                     },
                 ),
                 v,
@@ -256,7 +256,7 @@ impl IDManager {
 }
 
 pub struct OrderBook {
-    seq_id: SeqID, // last seqID had ever seen. for dedup & ignore outdated request
+    trade_id: SeqID, // last tradeID had ever seen. for dedup & ignore outdated request
     id_manager: IDManager,
     order_id_to_orderbook_key: HashMap<OrderID, OrderBookKey>,
     bid_orders: BTreeOrderQueue,
@@ -267,7 +267,7 @@ pub struct OrderBook {
 impl OrderBook {
     pub fn new() -> Self {
         Self {
-            seq_id: 0,
+            trade_id: 0,
             id_manager: IDManager::default(),
             order_id_to_orderbook_key: HashMap::new(),
             bid_orders: BTreeOrderQueue::new(Direction::Buy),
@@ -278,7 +278,7 @@ impl OrderBook {
     pub fn process_trade_cmd(&mut self, cmd: oms::TradeCmd) -> Result<MatchResult, OrderBookErr> {
         if let Some(cmd) = cmd.rpc_cmd {
             match BizAction::from_i32(cmd.biz_action) {
-                Some(BizAction::FillOrder) => {
+                Some(BizAction::PlaceOrder) => {
                     if let Some(oms::PlaceOrderReq {
                         order: Some(place_order),
                     }) = cmd.place_order_req
@@ -300,11 +300,8 @@ impl OrderBook {
                         return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
                     }
                 }
-                None => {
-                    return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
-                }
                 _ => {
-                    todo!();
+                    return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
                 }
             }
         } else {
@@ -322,7 +319,7 @@ impl OrderBook {
 
     // seq_id由raft模块生成
     fn advance_seq_id(&mut self, seq_id: u64) {
-        self.seq_id = max(self.seq_id, seq_id);
+        self.trade_id = max(self.trade_id, seq_id);
     }
 
     fn post_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr> {
@@ -343,7 +340,7 @@ impl OrderBook {
         queue.add(
             OrderBookKey {
                 price: order.price,
-                seq_id: order.seq_id,
+                seq_id: order.trade_id,
             },
             maker_order,
         );
@@ -351,7 +348,7 @@ impl OrderBook {
             order.order_id.clone(),
             OrderBookKey {
                 price: order.price,
-                seq_id: order.seq_id,
+                seq_id: order.trade_id,
             },
         );
         Ok(MatchResult {
@@ -404,7 +401,7 @@ impl OrderBook {
                 match_keys.push(maker_key);
                 let prev_match_id = self.id_manager.match_id().clone();
                 let match_id = self.id_manager.advance_match_id();
-                results.push(MatchRecord {
+                results.push(FillRecord {
                     match_id: match_id,
                     prev_match_id: prev_match_id,
                     price: maker.order.price,
@@ -491,13 +488,13 @@ impl OrderBook {
                 taker.order.order_id.clone(),
                 OrderBookKey {
                     price: taker.order.price,
-                    seq_id: taker.order.seq_id,
+                    seq_id: taker.order.trade_id,
                 },
             );
             current_q.add(
                 OrderBookKey {
                     price: taker.order.price,
-                    seq_id: taker.order.seq_id,
+                    seq_id: taker.order.trade_id,
                 },
                 taker.clone(),
             );
@@ -535,10 +532,10 @@ impl OrderBook {
 
 impl OrderBookRequestHandler for OrderBook {
     fn place_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr> {
-        if order.seq_id <= self.seq_id {
-            return Err(OrderBookErr::new(err_code::ERR_OB_INVALID_SEQ_ID));
-        }
-        self.advance_seq_id(order.seq_id);
+        // if order.seq_id <= self.seq_id {
+        //     return Err(OrderBookErr::new(err_code::ERR_OB_INVALID_SEQ_ID));
+        // }
+        self.advance_seq_id(order.trade_id);
 
         if order.post_only {
             return self.post_order(order);
@@ -643,7 +640,7 @@ impl OrderBookSnapshotHandler for OrderBook {
         Ok(OrderBookSnapshot {
             bid_orders: self.bid_orders.take_queue_snapshot(),
             ask_orders: self.ask_orders.take_queue_snapshot(),
-            last_seq_id: self.seq_id,
+            last_seq_id: self.trade_id,
             id_manager: self.id_manager.clone(),
         })
     }
@@ -654,13 +651,13 @@ impl OrderBookSnapshotHandler for OrderBook {
         for v in s.bid_orders.iter() {
             order_id_to_key.insert(
                 v.order.order_id.clone(),
-                OrderBookKey::new(v.order.price, v.order.seq_id),
+                OrderBookKey::new(v.order.price, v.order.trade_id),
             );
         }
         for v in s.ask_orders.iter() {
             order_id_to_key.insert(
                 v.order.order_id.clone(),
-                OrderBookKey::new(v.order.price, v.order.seq_id),
+                OrderBookKey::new(v.order.price, v.order.trade_id),
             );
         }
 
@@ -668,7 +665,7 @@ impl OrderBookSnapshotHandler for OrderBook {
         let ask_orders = BTreeOrderQueue::from(s.ask_orders);
 
         Ok(OrderBook {
-            seq_id: s.last_seq_id,
+            trade_id: s.last_seq_id,
             id_manager: s.id_manager,
             order_id_to_orderbook_key: order_id_to_key,
             bid_orders,
@@ -718,8 +715,8 @@ mod test {
             post_only: true, // essential
             account_id: account_id,
             order_id: OrderID::new(),
-            seq_id: ob.seq_id + 1,
-            prev_seq_id: ob.seq_id,
+            trade_id: ob.trade_id + 1,
+            prev_trade_id: ob.trade_id,
             direction: direction,
             order_type: OrderType::Limit,
             time_in_force: TimeInForce::Gtk,
@@ -745,8 +742,8 @@ mod test {
             post_only: false,
             order_id: OrderID::new(),
             account_id: account_id,
-            seq_id: ob.seq_id + 1,
-            prev_seq_id: ob.seq_id,
+            trade_id: ob.trade_id + 1,
+            prev_trade_id: ob.trade_id,
             direction: direction,
             order_type: OrderType::Limit,
             time_in_force: TimeInForce::Gtk,

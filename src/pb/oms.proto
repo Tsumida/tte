@@ -77,8 +77,8 @@ message Order{
     int32 stp_strategy = 10; // 对应STPStrategy枚举
     uint64 account_id = 11; 
     bool post_only = 12; // true表示只挂单不吃单
-    uint64 seq_id = 13; // 创建订单时初始化，此后不变
-    uint64 prev_seq_id = 14;
+    uint64 trade_id = 13; // 创建订单时初始化，此后不变
+    uint64 prev_trade_id = 14;
 }
 
 
@@ -86,7 +86,7 @@ message OrderDetail{
     Order original = 1;
     string current_state = 2; // 对应OrderState枚举
     string filled_quantity = 3;
-    uint64 last_seq_id = 4;
+    uint64 last_trade_id = 4;
     uint64 update_time = 5; // us
 }
 

@@ -45,9 +45,9 @@ pub struct Order {
     pub post_only: bool,
     /// 创建订单时初始化，此后不变
     #[prost(uint64, tag = "13")]
-    pub seq_id: u64,
+    pub trade_id: u64,
     #[prost(uint64, tag = "14")]
-    pub prev_seq_id: u64,
+    pub prev_trade_id: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -60,7 +60,7 @@ pub struct OrderDetail {
     #[prost(string, tag = "3")]
     pub filled_quantity: ::prost::alloc::string::String,
     #[prost(uint64, tag = "4")]
-    pub last_seq_id: u64,
+    pub last_trade_id: u64,
     /// us
     #[prost(uint64, tag = "5")]
     pub update_time: u64,

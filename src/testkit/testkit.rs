@@ -18,8 +18,8 @@ pub fn new_limit_order(
         order_id: order_id.to_string(),
         account_id,
         client_order_id: format!("CLIENT_{}", order_id),
-        seq_id: 1,
-        prev_seq_id: 0,
+        trade_id: 1,
+        prev_trade_id: 0,
         time_in_force: TimeInForce::Gtk,
         order_type: OrderType::Limit,
         direction,
@@ -39,7 +39,7 @@ pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchRes
     let mut match_records = vec![];
 
     // 第一次成交 0.5 BTC
-    match_records.push(MatchRecord {
+    match_records.push(FillRecord {
         match_id: 1,
         prev_match_id: 0,
         price: sell.price,

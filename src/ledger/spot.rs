@@ -12,7 +12,7 @@ use rust_decimal::Decimal;
 use crate::{
     common::{
         err_code::{self, ERR_INPOSSIBLE_STATE, TradeEngineErr},
-        types::{Direction, MatchRecord, MatchResult, Order, SeqID, Symbol},
+        types::{CancelOrderResult, Direction, FillRecord, Order, SeqID, Symbol},
     },
     pbcode::oms::BizAction,
 };
@@ -28,12 +28,12 @@ pub trait SpotLedgerRPCHandler {
 pub trait SpotLedgerMatchResultConsumer {
     fn fill_order(
         &mut self,
-        match_record: &MatchRecord,
+        match_record: &FillRecord,
     ) -> Result<Vec<SpotChangeResult>, SpotLedgerErr>;
 
     fn cancel_order(
         &mut self,
-        match_result: &MatchResult,
+        result: &CancelOrderResult,
     ) -> Result<SpotChangeResult, SpotLedgerErr>;
 }
 
@@ -374,7 +374,7 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
     // 对taker和maker 依次执行
     fn fill_order(
         &mut self,
-        match_result: &MatchRecord,
+        match_result: &FillRecord,
     ) -> Result<Vec<SpotChangeResult>, SpotLedgerErr> {
         let spot_id = self.advance_spot_id();
         let taker_order_id = match_result.taker_order_id.clone();
@@ -458,16 +458,8 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
 
     fn cancel_order(
         &mut self,
-        match_result: &MatchResult,
+        result: &CancelOrderResult,
     ) -> Result<SpotChangeResult, SpotLedgerErr> {
-        let result = match_result
-            .cancel_result
-            .as_ref()
-            .ok_or(SpotLedgerErr::new(
-                err_code::ERR_INPOSSIBLE_STATE,
-                "CancelResult is None in cancel_order",
-            ))?;
-
         if !result.is_cancel_success {
             return Err(SpotLedgerErr::new(
                 err_code::ERR_INPOSSIBLE_STATE,
@@ -704,7 +696,11 @@ mod tests {
 
         assert!(
             ledger
-                .cancel_order(&testkit::cancel_buy_limit_order(&orders[0]))
+                .cancel_order(
+                    &testkit::cancel_buy_limit_order(&orders[0])
+                        .cancel_result
+                        .unwrap()
+                )
                 .is_ok()
         );
         let balance_1001_after = ledger.get_all_balances(1001);

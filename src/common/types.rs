@@ -56,9 +56,9 @@ pub struct Order {
     #[getset(get = "pub")]
     pub client_order_id: ClientOrderID,
     #[getset(get = "pub")]
-    pub seq_id: SeqID,
+    pub trade_id: SeqID,
     #[getset(get = "pub")]
-    pub prev_seq_id: SeqID,
+    pub prev_trade_id: SeqID,
     #[getset(get = "pub")]
     pub time_in_force: TimeInForce,
     #[getset(get = "pub")]
@@ -81,8 +81,8 @@ impl Into<pb::Order> for Order {
             order_id: self.order_id,
             account_id: self.account_id,
             client_order_id: self.client_order_id,
-            seq_id: self.seq_id,
-            prev_seq_id: self.prev_seq_id,
+            trade_id: self.trade_id,
+            prev_trade_id: self.prev_trade_id,
             time_in_force: self.time_in_force as i32,
             order_type: self.order_type as i32,
             direction: self.direction as i32,
@@ -104,8 +104,8 @@ impl Order {
             order_id: om_order.order_id,
             account_id: om_order.account_id,
             client_order_id: om_order.client_order_id,
-            seq_id: om_order.seq_id,
-            prev_seq_id: om_order.prev_seq_id,
+            trade_id: om_order.trade_id,
+            prev_trade_id: om_order.prev_trade_id,
             time_in_force: pb::TimeInForce::from_i32(om_order.time_in_force)
                 .unwrap_or(pb::TimeInForce::Gtk),
             order_type: pb::OrderType::from_i32(om_order.order_type)
@@ -128,7 +128,7 @@ pub struct OrderDetail {
     #[getset(get = "pub", set = "pub")]
     filled_qty: Decimal,
     #[getset(get = "pub", set = "pub")]
-    last_seq_id: SeqID,
+    last_trade_id: SeqID,
     #[getset(get = "pub", set = "pub")]
     update_time: u64,
 }
@@ -139,7 +139,7 @@ impl OrderDetail {
             original: order.clone(),
             current_state: OrderState::New,
             filled_qty: Decimal::new(0, 0),
-            last_seq_id: 0,
+            last_trade_id: 0,
             update_time: 0,
         }
     }
@@ -152,7 +152,7 @@ impl Into<pb::OrderDetail> for &OrderDetail {
             original: Some(self.original.clone().into()),
             current_state: self.current_state.as_str_name().to_string(),
             filled_quantity: self.filled_qty.to_string(), // 考虑
-            last_seq_id: self.last_seq_id,
+            last_trade_id: *self.last_trade_id(),
             update_time: self.update_time,
         }
     }
@@ -160,7 +160,7 @@ impl Into<pb::OrderDetail> for &OrderDetail {
 
 // 撮合结果结构体
 #[derive(Debug, Clone)]
-pub struct MatchRecord {
+pub struct FillRecord {
     // pub seq_id: SeqID,
     // pub prev_seq_id: SeqID,
     pub match_id: MatchID,
@@ -179,23 +179,23 @@ pub struct MatchRecord {
     pub trade_pair: TradePair,
 }
 
-impl From<pb::FillRecord> for MatchRecord {
-    fn from(mr: pb::FillRecord) -> Self {
-        MatchRecord {
+impl From<&pb::FillRecord> for FillRecord {
+    fn from(mr: &pb::FillRecord) -> Self {
+        FillRecord {
             match_id: mr.match_id,
             prev_match_id: mr.prev_match_id,
             price: Decimal::from_str_exact(&mr.price).unwrap_or(Decimal::new(0, 0)),
             qty: Decimal::from_str_exact(&mr.quantity).unwrap_or(Decimal::new(0, 0)),
             direction: pb::Direction::from_i32(mr.direction).unwrap_or(pb::Direction::Buy),
-            taker_order_id: mr.taker_order_id,
+            taker_order_id: mr.taker_order_id.clone(),
             taker_account_id: mr.taker_account_id,
             taker_state: pb::OrderState::from_i32(mr.taker_state).unwrap_or(pb::OrderState::New),
-            maker_order_id: mr.maker_order_id,
+            maker_order_id: mr.maker_order_id.clone(),
             maker_account_id: mr.maker_account_id,
             maker_state: pb::OrderState::from_i32(mr.maker_state).unwrap_or(pb::OrderState::New),
             is_taker_fulfilled: mr.is_taker_fulfilled,
             is_maker_fulfilled: mr.is_maker_fulfilled,
-            trade_pair: mr.trade_pair.unwrap(),
+            trade_pair: mr.trade_pair.clone().unwrap(),
         }
     }
 }
@@ -294,22 +294,9 @@ impl MatchResult {
 pub struct FillOrderResult {
     pub original_order: Order,
     pub trade_pair: TradePair,
-    pub results: Vec<MatchRecord>,
+    pub results: Vec<FillRecord>,
     pub order_state: OrderState,
     pub total_filled_qty: Decimal,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReplaceOrderResult {
-    pub is_replace_success: bool,
-    pub err_msg: Option<String>,
-    pub trade_pair: TradePair,
-    pub direction: Direction,
-    pub order_id: OrderID,
-    pub account_id: u64,
-    pub order_state: OrderState,
-    pub new_price: Decimal,
-    pub new_quantity: Decimal,
 }
 
 #[derive(Debug, Clone)]
@@ -321,6 +308,23 @@ pub struct CancelOrderResult {
     pub order_id: OrderID,
     pub account_id: u64,
     pub order_state: OrderState,
+}
+
+impl From<&pb::CancelResult> for CancelOrderResult {
+    fn from(cr: &pb::CancelResult) -> Self {
+        CancelOrderResult {
+            is_cancel_success: cr.order_state == pb::OrderState::Cancelled as i32,
+            err_msg: None,
+            trade_pair: TradePair::new(
+                &cr.trade_pair.as_ref().unwrap().base,
+                &cr.trade_pair.as_ref().unwrap().quote,
+            ),
+            direction: pb::Direction::from_i32(cr.direction).unwrap_or(pb::Direction::Buy),
+            order_id: cr.order_id.clone(),
+            account_id: cr.account_id,
+            order_state: pb::OrderState::from_i32(cr.order_state).unwrap_or(pb::OrderState::New),
+        }
+    }
 }
 
 pub struct TradeCmdTransfer {}
