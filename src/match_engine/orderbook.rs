@@ -143,22 +143,31 @@ impl BTreeOrderQueue {
     }
 
     fn get_aggregated_qty(&self, depth: usize) -> Vec<(Decimal, Decimal)> {
-        let mut cnt = 0;
+        let mut level = 0;
         let mut last_price = Decimal::ZERO;
         let mut current_qty = Decimal::ZERO;
         let mut agg = Vec::with_capacity(depth);
         for (_, order) in self.orders.iter() {
-            if cnt >= depth {
+            if level >= depth {
                 break;
             }
-            if last_price != order.order.price {
+            if order.order.price != last_price {
+                if last_price != Decimal::ZERO {
+                    agg.push((last_price, current_qty));
+                    level += 1;
+                    if level >= depth {
+                        break;
+                    }
+                }
                 last_price = order.order.price;
+                current_qty = order.qty_info.remain_qty;
+            } else {
                 current_qty += order.qty_info.remain_qty;
-                agg.push((last_price, current_qty));
-                cnt += 1;
-
-                current_qty = Decimal::ZERO;
             }
+        }
+        // 判断是否要append最后一个level
+        if level < depth {
+            agg.push((last_price, current_qty));
         }
 
         agg
@@ -197,7 +206,7 @@ pub struct OrderBookLevelSnapshot {
     pub depth: usize,
     pub bid_orders: Vec<(Decimal, Decimal)>,
     pub ask_orders: Vec<(Decimal, Decimal)>,
-    pub last_seq_id: u64,
+    // pub last_seq_id: u64,
 }
 
 pub struct OrderBookSnapshot {
@@ -626,7 +635,7 @@ impl OrderBookSnapshotHandler for OrderBook {
             depth,
             bid_orders,
             ask_orders,
-            last_seq_id: self.seq_id,
+            // last_seq_id: self.seq_id,
         })
     }
 
@@ -695,6 +704,7 @@ mod test {
     };
     use rust_decimal::Decimal;
     use rust_decimal::prelude::FromPrimitive;
+    use rust_decimal_macros::dec;
 
     fn post_limit_order(
         ob: &mut OrderBook,
@@ -941,23 +951,31 @@ mod test {
     #[test]
     fn test_snapshot() {
         let mut ob = OrderBook::new();
+        // sufficient level
         post_limit_order(&mut ob, 1001, Direction::Buy, 102.0, 10.0);
         post_limit_order(&mut ob, 1002, Direction::Buy, 101.0, 5.0);
-        post_limit_order(&mut ob, 1003, Direction::Buy, 100.0, 20.0);
-        post_limit_order(&mut ob, 1004, Direction::Sell, 101.0, 30.0);
+        post_limit_order(&mut ob, 1003, Direction::Buy, 101.0, 20.0);
+
+        // insuffient level
+        post_limit_order(&mut ob, 1011, Direction::Sell, 101.0, 20.0);
+        post_limit_order(&mut ob, 1012, Direction::Sell, 101.0, 30.0);
+        post_limit_order(&mut ob, 1013, Direction::Sell, 101.0, 25.0);
+
+        // result:
+        // (102, 10.0), (101, 25.0)
+        // (101, 75.0)
 
         let snapshot = ob.take_snapshot_with_depth(2).unwrap();
         assert_eq!(
-            vec![
-                (Decimal::from(102), Decimal::from(10)),
-                (Decimal::from(101), Decimal::from(5)),
-            ],
+            vec![(dec!(102), dec!(10)), (dec!(101), dec!(25)),],
             snapshot.bid_orders,
         );
-        assert_eq!(
-            vec![(Decimal::from(101), Decimal::from(30)),],
-            snapshot.ask_orders,
-        );
-        assert_eq!(4, snapshot.last_seq_id)
+        assert_eq!(vec![(dec!(101), dec!(75)),], snapshot.ask_orders,);
+        // assert_eq!(6, snapshot.last_seq_id);
+
+        let snapshot = ob.take_snapshot_with_depth(1).unwrap();
+        assert_eq!(vec![(dec!(102), dec!(10))], snapshot.bid_orders,);
+        assert_eq!(vec![(dec!(101), dec!(75)),], snapshot.ask_orders,);
+        // assert_eq!(6, snapshot.last_seq_id);
     }
 }

@@ -24,6 +24,7 @@ fn dev_config() -> (ProducerConfig, ConsumerConfig) {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_kafka_prod_consume() -> Result<(), Box<dyn std::error::Error>> {
     let (prod_cfg, consumer_cfg) = dev_config();
 

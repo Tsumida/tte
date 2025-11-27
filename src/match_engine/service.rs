@@ -51,8 +51,6 @@ where
     }
 }
 
-type MatchCmdSender = tokio::sync::mpsc::Sender<CmdWrapper<MatchCmd>>;
-type MatchCmdReceiver = tokio::sync::mpsc::Receiver<CmdWrapper<MatchCmd>>;
 type SequencerSender = tokio::sync::mpsc::Sender<CmdWrapper<MatchCmd>>;
 type SequencerReceiver = tokio::sync::mpsc::Receiver<CmdWrapper<MatchCmd>>;
 type MatchResultSender = tokio::sync::mpsc::Sender<CmdWrapper<oms::BatchMatchResult>>;
@@ -60,7 +58,7 @@ type MatchResultReceiver = tokio::sync::mpsc::Receiver<CmdWrapper<oms::BatchMatc
 
 pub struct MatchEngineService {
     #[allow(dead_code)]
-    submit_sender: MatchCmdSender, // todo: admin cmd
+    submit_sender: SequencerSender, // todo: admin cmd
 }
 
 impl MatchEngineService {
@@ -240,18 +238,44 @@ impl ApplyThread {
 
     #[instrument(level = "info", skip_all)]
     pub async fn handle_match_req(&mut self, batch_match_req: oms::BatchMatchRequest) {
-        let mut match_result_buffer: Vec<MatchResult> = Vec::new();
+        let mut match_result_buffer = Vec::with_capacity(batch_match_req.cmds.len());
         for cmd in batch_match_req.cmds {
-            let res = self.orderbook.process_trade_cmd(cmd);
-            match res {
-                Ok(result) => {
-                    match_result_buffer.push(result);
-                }
-                Err(e) => {
-                    info!("Error processing match request: {:?}", e);
-                }
+            let trade_id = cmd.trade_id;
+            let prev_trade_id = cmd.prev_trade_id;
+            let action =
+                oms::BizAction::from_i32(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
+            match self.orderbook.process_trade_cmd(cmd) {
+                Ok(r) => match r.action {
+                    oms::BizAction::FillOrder => {
+                        let fill_result = r.fill_result.as_ref().unwrap();
+                        let match_result =
+                            MatchResult::into_fill_result_pb(trade_id, prev_trade_id, fill_result);
+                        match_result_buffer.push(match_result);
+                    }
+                    oms::BizAction::CancelOrder => {
+                        match_result_buffer.push(MatchResult::into_cancel_result_pb(
+                            trade_id,
+                            prev_trade_id,
+                            r.cancel_result.as_ref().unwrap(),
+                        ));
+                    }
+                    _ => {}
+                },
+                Err(e) => match_result_buffer.push(MatchResult::into_err(
+                    trade_id,
+                    prev_trade_id,
+                    action,
+                    e.to_string(),
+                )),
             }
         }
+        self.match_result_sender
+            .send(CmdWrapper::new(oms::BatchMatchResult {
+                trade_pair: batch_match_req.trade_pair.clone(),
+                results: match_result_buffer,
+            }))
+            .await
+            .expect("send match result");
     }
 }
 

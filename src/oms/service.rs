@@ -8,7 +8,7 @@ use crate::common::{err_code, types};
 use crate::infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
 use crate::oms::error::OMSErr;
 use crate::oms::oms::{OMSChangeResult, OMSMatchResultHandler, OMSRpcHandler};
-use crate::pbcode::oms::{BizAction, ReplaceOrderCmd};
+use crate::pbcode::oms::BizAction;
 use crate::sequencer::api::{DefaultSequencer, SequenceSetter};
 use crate::{
     oms::oms::{OMS, OrderBuilder},
@@ -353,7 +353,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
     #[instrument(level = "info", skip_all)]
     async fn transfer_freeze(
         &self,
-        req: tonic::Request<oms::TransferFreezeReq>,
+        _req: tonic::Request<oms::TransferFreezeReq>,
     ) -> Result<tonic::Response<oms::TransferFreezeRsp>, tonic::Status> {
         todo!()
     }
@@ -361,7 +361,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
     #[instrument(level = "info", skip_all)]
     async fn transfer(
         &self,
-        req: tonic::Request<oms::TransferReq>,
+        _req: tonic::Request<oms::TransferReq>,
     ) -> Result<tonic::Response<oms::TransferRsp>, tonic::Status> {
         todo!()
     }
@@ -369,7 +369,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
     #[instrument(level = "info", skip_all)]
     async fn take_snapshot(
         &self,
-        req: tonic::Request<oms::TakeSnapshotReq>,
+        _req: tonic::Request<oms::TakeSnapshotReq>,
     ) -> Result<tonic::Response<oms::TakeSnapshotRsp>, tonic::Status> {
         todo!()
     }
@@ -377,7 +377,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
     #[instrument(level = "info", skip_all)]
     async fn update_trade_pair_config(
         &self,
-        req: tonic::Request<oms::UpdateTradePairConfigReq>,
+        _req: tonic::Request<oms::UpdateTradePairConfigReq>,
     ) -> Result<tonic::Response<oms::UpdateTradePairConfigRsp>, tonic::Status> {
         todo!()
     }

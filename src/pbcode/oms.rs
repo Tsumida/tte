@@ -104,10 +104,10 @@ pub struct TradeCmd {
     #[prost(message, optional, tag = "4")]
     pub rpc_cmd: ::core::option::Option<RpcCmd>,
 }
-/// 撮合结果
+/// 成交结果
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MatchRecord {
+pub struct FillRecord {
     #[prost(uint64, tag = "1")]
     pub match_id: u64,
     #[prost(uint64, tag = "2")]
@@ -142,15 +142,43 @@ pub struct MatchRecord {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CancelResult {
+    #[prost(string, tag = "1")]
+    pub order_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub account_id: u64,
+    #[prost(message, optional, tag = "3")]
+    pub trade_pair: ::core::option::Option<TradePair>,
+    /// 对应Direction枚举, 被取消订单的方向
+    #[prost(int32, tag = "4")]
+    pub direction: i32,
+    /// 对应OrderState枚举。此状态为Cancelled则撤单成功
+    #[prost(int32, tag = "5")]
+    pub order_state: i32,
+}
+/// 撮合结果，和一次撮合请求一一对应
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MatchResult {
     #[prost(uint64, tag = "1")]
     pub trade_id: u64,
     #[prost(uint64, tag = "2")]
     pub prev_trade_id: u64,
-    #[prost(message, optional, tag = "3")]
-    pub order: ::core::option::Option<Order>,
-    #[prost(message, repeated, tag = "4")]
-    pub records: ::prost::alloc::vec::Vec<MatchRecord>,
+    /// 对应BizAction枚举, 只用到PlaceOrder, CancelOrder
+    #[prost(enumeration = "BizAction", tag = "3")]
+    pub action: i32,
+    /// 撮合处理是否成功, 如果失败
+    #[prost(bool, tag = "4")]
+    pub is_success: bool,
+    /// is_success为false时有效，表示失败原因
+    #[prost(string, tag = "5")]
+    pub err_msg: ::prost::alloc::string::String,
+    /// action为PlaceOrder时有效
+    #[prost(message, repeated, tag = "6")]
+    pub records: ::prost::alloc::vec::Vec<FillRecord>,
+    /// action为CancelOrder时有效
+    #[prost(message, optional, tag = "7")]
+    pub cancel_result: ::core::option::Option<CancelResult>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

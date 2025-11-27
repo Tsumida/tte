@@ -89,7 +89,7 @@ pub trait OMSRpcHandler {
 }
 
 pub trait OMSMatchResultHandler {
-    fn handle_match_result(&mut self, record: oms::MatchRecord) -> Result<OMSChangeResult, OMSErr>;
+    fn handle_match_result(&mut self, record: oms::FillRecord) -> Result<OMSChangeResult, OMSErr>;
 }
 
 #[derive(Getters)]
@@ -161,7 +161,7 @@ impl OMS {
             ));
         }
 
-        self.check_client_order_id(order.order_id())?;
+        self.check_client_order_id(order.client_order_id())?;
         Ok(())
     }
 
@@ -240,7 +240,7 @@ impl OMS {
     fn check_client_order_id(&self, client_order_id: &str) -> Result<(), OMSErr> {
         if !client_order_id.is_empty() && self.client_order_map.contains_key(client_order_id) {
             return Err(OMSErr::new(
-                err_code::ERR_OMS_DUPLICATE_PLACE,
+                err_code::ERR_OMS_DUPLICATE_CLI_ORD_ID,
                 "Duplicate client order ID",
             ));
         }
@@ -289,7 +289,7 @@ impl OMSRpcHandler for OMS {
                         .ok_or_else(|| {
                             OMSErr::new(err_code::ERR_OMS_PAIR_NOT_FOUND, "Missing market data")
                         })?
-                        .last_price,
+                        .last_price, // todo:
                 }
                 .cal(&order);
 
@@ -331,7 +331,7 @@ impl OMSRpcHandler for OMS {
 }
 
 impl OMSMatchResultHandler for OMS {
-    fn handle_match_result(&mut self, record: oms::MatchRecord) -> Result<OMSChangeResult, OMSErr> {
+    fn handle_match_result(&mut self, record: oms::FillRecord) -> Result<OMSChangeResult, OMSErr> {
         let mr = MatchRecord::from(record);
         let match_id = mr.match_id;
         // note: 一条成交会更新两个账户，因此生成多个SpotChangeResult。需要合并返回吧你

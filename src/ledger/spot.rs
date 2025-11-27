@@ -14,7 +14,7 @@ use crate::{
         err_code::{self, ERR_INPOSSIBLE_STATE, TradeEngineErr},
         types::{Direction, MatchRecord, MatchResult, Order, SeqID, Symbol},
     },
-    pbcode::oms,
+    pbcode::oms::BizAction,
 };
 
 pub trait SpotLedgerRPCHandler {
@@ -283,6 +283,7 @@ impl SpotLedger {
     pub fn commit(
         &mut self,
         spot_id: u64,
+        action: i32,
         before: SingleCurrencyTx,
         after: SingleCurrencyTx,
     ) -> SpotChangeResult {
@@ -326,7 +327,7 @@ impl SpotLedger {
             is_action_success: true,
             action_failed_err: None,
             spot_id: spot_id,
-            action: oms::BizAction::ReplaceOrder as i32,
+            action,
             spot_before: before.spot.unwrap(),
             spot_after: after.spot.unwrap(),
         }
@@ -363,7 +364,7 @@ impl SpotLedger {
             frozen_receipt: None,
         };
         _ = tx.add_deposit(amount)?;
-        _ = self.commit(tx.spot_id, tx.clone(), tx);
+        _ = self.commit(tx.spot_id, 0, tx.clone(), tx); // Add Deposit是内部操作, 沒有对应bizAction
 
         Ok(())
     }
@@ -451,7 +452,7 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
         Ok(before
             .into_iter()
             .zip(after.into_iter())
-            .map(|(before, after)| self.commit(spot_id, before, after))
+            .map(|(before, after)| self.commit(spot_id, BizAction::FillOrder as i32, before, after))
             .collect())
     }
 
@@ -494,7 +495,7 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
         }
         let before = tx.clone();
         tx.release_all()?;
-        Ok(self.commit(spot_id, before, tx))
+        Ok(self.commit(spot_id, BizAction::CancelOrder as i32, before, tx))
     }
 }
 
@@ -523,7 +524,7 @@ impl SpotLedgerRPCHandler for SpotLedger {
         };
         let mut tx = before.clone();
         tx.freeze(&order.order_id, amount)?;
-        Ok(self.commit(spot_id, before, tx))
+        Ok(self.commit(spot_id, BizAction::PlaceOrder as i32, before, tx))
     }
 }
 

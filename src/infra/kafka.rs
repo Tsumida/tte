@@ -55,8 +55,7 @@ impl ConsumerConfig {
             .set("bootstrap.servers", &self.bootstrap_servers)
             .set("group.id", &self.group_id)
             .set("auto.offset.reset", &self.auto_offset_reset.to_string())
-            .create()
-            .expect("Consumer creation failed");
+            .create()?;
 
         consumer
             .subscribe(

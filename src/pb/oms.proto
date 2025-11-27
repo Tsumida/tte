@@ -112,24 +112,8 @@ message TradeCmd{
     RpcCmd rpc_cmd = 4;
 }
 
-// 撮合结果
-message MatchRecord{
-
-    //     pub match_id: MatchID,
-    // pub prev_match_id: MatchID,
-    // pub price: Decimal,
-    // pub qty: Decimal,
-    // pub direction: Direction,
-    // pub taker_order_id: OrderID,
-    // pub taker_account_id: u64,
-    // pub taker_state: OrderState,
-    // pub maker_order_id: OrderID,
-    // pub maker_account_id: u64,
-    // pub maker_state: OrderState,
-    // pub is_taker_fulfilled: bool,
-    // pub is_maker_fulfilled: bool,
-    // pub trade_pair: TradePair,
-
+// 成交结果
+message FillRecord{
     uint64 match_id = 1;
     uint64 prev_match_id = 2;
     string price = 3;
@@ -146,11 +130,23 @@ message MatchRecord{
     int32 maker_state = 14; // 对应OrderState枚举
 }
 
+message CancelResult{
+    string order_id = 1;
+    uint64 account_id = 2;
+    TradePair trade_pair = 3;
+    int32 direction = 4; // 对应Direction枚举, 被取消订单的方向
+    int32 order_state = 5; // 对应OrderState枚举。此状态为Cancelled则撤单成功
+}
+
+// 撮合结果，和一次撮合请求一一对应
 message MatchResult{
     uint64 trade_id = 1;
     uint64 prev_trade_id = 2;
-    Order order = 3;
-    repeated MatchRecord records = 4;
+    BizAction action = 3; // 对应BizAction枚举, 只用到PlaceOrder, CancelOrder
+    bool is_success = 4; // 撮合处理是否成功, 如果失败
+    string err_msg = 5; // is_success为false时有效，表示失败原因
+    repeated FillRecord records = 6;  // action为PlaceOrder时有效
+    CancelResult cancel_result = 7; // action为CancelOrder时有效
 }
 
 message BatchMatchRequest{
