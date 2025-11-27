@@ -8,7 +8,7 @@ use crate::common::{err_code, types};
 use crate::infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
 use crate::oms::error::OMSErr;
 use crate::oms::oms::{OMSMatchResultHandler, OMSRpcHandler};
-use crate::pbcode::oms::{BizAction, MatchResult};
+use crate::pbcode::oms::{BatchMatchRequest, BizAction, MatchResult};
 use crate::sequencer::api::{DefaultSequencer, SequenceSetter};
 use crate::{
     oms::oms::{OMS, OrderBuilder},
@@ -32,11 +32,11 @@ struct Informer {
     err: Option<OMSErr>,
 }
 
-type MatchReqSender = mpsc::Sender<oms::TradeCmd>;
-type MatchReqReceiver = mpsc::Receiver<oms::TradeCmd>;
+type MatchReqSender = mpsc::Sender<oms::BatchMatchRequest>;
+type MatchReqReceiver = mpsc::Receiver<oms::BatchMatchRequest>;
 
 fn match_req_chan(chan_size: usize) -> (MatchReqSender, MatchReqReceiver) {
-    mpsc::channel::<oms::TradeCmd>(chan_size)
+    mpsc::channel::<oms::BatchMatchRequest>(chan_size)
 }
 
 pub trait OrderRouter {
@@ -419,6 +419,7 @@ impl ApplyThreadBuilder {
             Ok(ApplyThread {
                 oms: self.oms,
                 commit_recv: recv,
+                match_req_sender: self.match_req_sender.expect("match_req_sender"),
             })
         } else {
             Err("Missing commit receiver")
@@ -430,18 +431,19 @@ impl ApplyThreadBuilder {
 struct ApplyThread {
     oms: Arc<RwLock<OMS>>,
     commit_recv: mpsc::Receiver<OMSCmd>,
+    match_req_sender: MatchReqSender,
 }
 
 impl ApplyThread {
     async fn run(&mut self) {
-        let batch_apply_size = 16;
+        let batch_apply_size = 8;
         let mut batch = Vec::with_capacity(batch_apply_size);
-        let mut match_requests = Vec::with_capacity(batch_apply_size);
         // todo: order events, ledger events
 
         tracing::info!("ApplyThread started");
         // todo: err handle for commit_recv
         while let Some(oms_cmd) = self.commit_recv.recv().await {
+            let mut match_requests = Vec::with_capacity(batch_apply_size);
             batch.push(oms_cmd);
             while batch.len() < batch_apply_size {
                 match self.commit_recv.try_recv() {
@@ -478,6 +480,13 @@ impl ApplyThread {
                     CmdFlow::MatchResult(batch_match_result) => {
                         let mut oms = self.oms.write().await;
                         for mr in batch_match_result.results.into_iter() {
+                            if !mr.is_success {
+                                error!(
+                                    "OMS match_result(trade_id={}, prev={}) failed in ME",
+                                    cmd.seq_id, cmd.prev_seq_id,
+                                );
+                                continue;
+                            }
                             match Self::handle_match_result(&mut oms, &mr).await {
                                 Ok(_) => {}
                                 Err(e) => {
@@ -493,8 +502,14 @@ impl ApplyThread {
                 }
             }
 
+            if let Err(e) = self
+                .send_match_requests(&self.match_req_sender, match_requests)
+                .await
+            {
+                error!("Failed to send match requests: {:?}", e);
+                break;
+            }
             batch.clear();
-            match_requests.clear();
         }
 
         tracing::info!("ApplyThread stopped");
@@ -523,21 +538,43 @@ impl ApplyThread {
                         }
                     };
                 }
-                Ok(())
             }
             BizAction::PlaceOrder => {
                 // ignore
-                Ok(())
+                info!("Ignore PlaceOrder match result");
             }
             BizAction::CancelOrder => {
-                // ignore
-                Ok(())
+                if let Some(result) = mr.cancel_result.as_ref() {
+                    oms.handle_success_cancel(result)?;
+                } else {
+                    return Err(OMSErr::new(
+                        err_code::ERR_OMS_INVALID_MATCH_RESULT,
+                        "missing cancel_result in match result",
+                    ));
+                }
             }
-            _ => Err(OMSErr::new(
-                err_code::ERR_OMS_INVALID_MATCH_RESULT,
-                "unsupported biz_action in match result",
-            )),
+            _ => {
+                return Err(OMSErr::new(
+                    err_code::ERR_OMS_INVALID_MATCH_RESULT,
+                    "unsupported biz_action in match result",
+                ));
+            }
         }
+        Ok(())
+    }
+
+    async fn send_match_requests(
+        &self,
+        match_req_sender: &MatchReqSender,
+        match_requests: Vec<oms::BatchMatchRequest>,
+    ) -> Result<(), OMSErr> {
+        for req in match_requests.into_iter() {
+            match_req_sender.send(req).await.map_err(|e| {
+                tracing::error!("Failed to send match request: {:?}", e);
+                OMSErr::new(err_code::ERR_INTERNAL, "match request send failed")
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -607,22 +644,21 @@ impl MatchRequestSender {
 
     async fn run(&mut self) {
         tracing::info!("MatchRequesrSender start");
-        while let Some(cmd) = self.receiver.recv().await {
-            if let Some(trade_pair) = cmd.trade_pair.as_ref() {
-                if let Err(e) = self.route_match_req(trade_pair, &cmd).await {
-                    error!("Failed to route match request: {:?}", e);
-                    continue;
-                }
-            } else {
-                error!("Missing trade pair in match request: {:?}", cmd);
-                continue;
+        while let Some(req) = self.receiver.recv().await {
+            let trade_pair = req.trade_pair.as_ref().expect("trade pair field");
+            if let Err(e) = self.route_match_req(trade_pair, req.cmds).await {
+                error!(
+                    "Failed to route match request for trade_pair={}: {:?}",
+                    trade_pair.pair(),
+                    e
+                );
             }
         }
         info!("MatchRequestSender stopped");
     }
 
     #[instrument(
-        level = "info", skip(self, cmd), 
+        level = "info", skip(self, cmds), 
         fields(
             trade_pair = %trade_pair.pair(),
         )
@@ -630,21 +666,19 @@ impl MatchRequestSender {
     async fn route_match_req(
         &self,
         trade_pair: &TradePair,
-        cmd: &oms::TradeCmd,
+        cmds: Vec<oms::TradeCmd>,
     ) -> Result<(), OMSErr> {
         let pair = trade_pair.pair();
         if let Some(router) = self.routers.get(&pair) {
+            let trade_ids: Vec<(u64, u64)> =
+                cmds.iter().map(|c| (c.trade_id, c.prev_trade_id)).collect();
+
             let buf = MatchReqestProcesser::serialize(oms::BatchMatchRequest {
                 trade_pair: Some(trade_pair.clone()),
-                cmds: vec![cmd.clone()],
+                cmds,
             });
 
-            tracing::info!(
-                "Routing to {}: trade_id={}, prev_trade_id={}",
-                pair,
-                cmd.trade_id,
-                cmd.prev_trade_id,
-            );
+            tracing::info!("Routing to {}: trade_ids={:?}", pair, trade_ids);
             router
                 .producers
                 .send(
