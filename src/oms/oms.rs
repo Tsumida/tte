@@ -256,10 +256,7 @@ impl OMS {
     }
 
     // refactor: atomic
-    fn insert_order(&mut self, mut order: Order) -> Result<(), OMSErr> {
-        let order_id = IDGenerator::gen_order_id(order.account_id);
-        order.order_id = order_id.clone();
-
+    fn insert_order(&mut self, order: Order) -> Result<(), OMSErr> {
         let account_orders =
             self.active_orders
                 .entry(order.account_id)
@@ -367,7 +364,7 @@ impl OMSRpcHandler for OMS {
                 let req_order = req.order.as_ref().ok_or_else(|| {
                     OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field order")
                 })?;
-                let order = OrderBuilder::new().build(trade_id, prev_trade_id, req_order)?;
+                let mut order = OrderBuilder::new().build(trade_id, prev_trade_id, req_order)?;
                 let pair = &order.trade_pair.pair();
                 let total_fee = FeeCalculator {
                     volatile_limit: Decimal::from_str(
@@ -395,13 +392,14 @@ impl OMSRpcHandler for OMS {
 
                 // todo: 账本和OMS整体并非原子操作, 需要考虑内存回滚机制
                 // 更新活跃订单状态
+                order.order_id = IDGenerator::gen_order_id(order.account_id);
                 self.insert_order(order.clone())?;
                 // 更新账本状态
                 let match_request = Some(oms::BatchMatchRequest {
                     trade_pair: Some(trade_pair.clone()),
                     cmds: vec![oms::TradeCmd {
-                        trade_id: order.trade_id.clone(),
-                        prev_trade_id: order.prev_trade_id.clone(),
+                        trade_id: trade_id.clone(),
+                        prev_trade_id: prev_trade_id.clone(),
                         trade_pair: Some(trade_pair.clone()),
                         rpc_cmd: Some(oms::RpcCmd {
                             biz_action: BizAction::PlaceOrder as i32,
@@ -520,6 +518,7 @@ impl OrderBuilder {
         OrderBuilder { create_order: true }
     }
 
+    // risk: 保证和pb的完全一致
     pub fn build(
         &mut self,
         trade_id: u64,
@@ -527,11 +526,7 @@ impl OrderBuilder {
         order: &oms::Order,
     ) -> Result<Order, OMSErr> {
         Ok(Order {
-            order_id: if self.create_order {
-                IDGenerator::gen_order_id(order.account_id)
-            } else {
-                order.order_id.clone()
-            },
+            order_id: order.order_id.clone(),
             client_order_id: order.client_order_id.clone(),
             account_id: order.account_id,
             trade_pair: order.trade_pair.clone().ok_or_else(|| {

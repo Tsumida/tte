@@ -19,7 +19,7 @@ use prost::Message as _;
 use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
 use tokio::sync::{RwLock, mpsc, oneshot};
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 type InformSender = oneshot::Sender<Informer>;
 type InformReceiver = oneshot::Receiver<Informer>;
@@ -210,7 +210,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
 
         let order = place_order_req.order.as_ref().unwrap();
         let order = OrderBuilder::new()
-            .build(order.trade_id, order.prev_trade_id, &order) // note: trade_id=0
+            .build(0, 0, &order) // note: trade_id=0
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid order detail: {}", e)))?;
 
         let oms = self.oms_view.read().await;
@@ -444,6 +444,7 @@ impl ApplyThread {
         // todo: err handle for commit_recv
         while let Some(oms_cmd) = self.commit_recv.recv().await {
             let mut match_requests = Vec::with_capacity(batch_apply_size);
+
             batch.push(oms_cmd);
             while batch.len() < batch_apply_size {
                 match self.commit_recv.try_recv() {
@@ -452,7 +453,7 @@ impl ApplyThread {
                 }
             }
 
-            tracing::info!("ApplyThread processing batch of size {}", batch.len());
+            tracing::info!("ApplyThread processing b atch of size {}", batch.len());
             for cmd in batch.drain(..) {
                 // todo: set ready if prev_seq_id <= oms.seq_id, else waits preceding cmds
                 match cmd.cmd {
@@ -498,6 +499,22 @@ impl ApplyThread {
                             }
                         }
                         drop(oms);
+                    }
+                }
+                if let Some(ch) = cmd.rsp_chan {
+                    if ch
+                        .send(Informer {
+                            seq_id: cmd.seq_id,
+                            prev_seq_id: cmd.prev_seq_id,
+                            is_success: true,
+                            err: None,
+                        })
+                        .is_err()
+                    {
+                        warn!(
+                            "ApplyThread: failed to send informer for seq_id={}",
+                            cmd.seq_id
+                        );
                     }
                 }
             }

@@ -275,7 +275,7 @@ impl SpotLedger {
     ) -> SingleCurrencyTx {
         SingleCurrencyTx {
             spot_id: self.current_spot_id(),
-            spot: Some(self.get_spot_or_default(account_id, currency)),
+            spot: self.get_spot(account_id, currency).cloned(),
             frozen_receipt: self.get_frozen_receipt(frozen_id).cloned(),
         }
     }
