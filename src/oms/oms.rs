@@ -255,6 +255,42 @@ impl OMS {
         Ok(())
     }
 
+    // refactor: atomic
+    fn insert_order(&mut self, mut order: Order) -> Result<(), OMSErr> {
+        let order_id = IDGenerator::gen_order_id(order.account_id);
+        order.order_id = order_id.clone();
+
+        let account_orders =
+            self.active_orders
+                .entry(order.account_id)
+                .or_insert(AccountOrderList {
+                    bid_orders: BTreeMap::new(),
+                    ask_orders: BTreeMap::new(),
+                });
+        let order_id = order.order_id.clone();
+        let client_order_id = order.client_order_id.clone();
+
+        let order_detail = OrderDetail::new(order);
+        let order_map = match order_detail.original().direction {
+            Direction::Buy => &mut account_orders.bid_orders,
+            Direction::Sell => &mut account_orders.ask_orders,
+            _ => unreachable!(),
+        };
+
+        if let Some(exist_order) = order_map.insert(order_id.clone(), order_detail) {
+            error!(
+                "Order ID conflict: account_id={}, order_id={}",
+                exist_order.original().account_id,
+                order_id
+            );
+            return Err(OMSErr::new(err_code::ERR_INTERNAL, "order id conflict"));
+        }
+
+        self.client_order_map.insert(client_order_id, order_id);
+
+        Ok(())
+    }
+
     fn remove_order(
         &mut self,
         direction: Direction,
@@ -293,11 +329,15 @@ impl OMS {
         direction: Direction,
         record: &oms::FillRecord,
     ) -> Result<(), OMSErr> {
-        if record.is_maker_fulfilled {
-            self.remove_order(direction, record.maker_account_id, &record.maker_order_id)?;
-        }
         if record.is_taker_fulfilled {
             self.remove_order(direction, record.taker_account_id, &record.taker_order_id)?;
+        }
+        if record.is_maker_fulfilled {
+            self.remove_order(
+                reverse_direction(&direction),
+                record.maker_account_id,
+                &record.maker_order_id,
+            )?;
         }
         Ok(())
     }
@@ -318,10 +358,16 @@ impl OMSRpcHandler for OMS {
                         "Missing field place_order_req",
                     )
                 })?;
-                let req_order = req.order.ok_or_else(|| {
+
+                // note: 一般来说，sequencer持久化时固定ID，避免后续更新引入bug。
+                // 但trade_id和一个sequencer_id关联，因此持久化后再生成是ok的
+                let prev_trade_id = *self.id_manager.trade_id();
+                let trade_id = self.id_manager.advance_trade_id(current_seq_id);
+
+                let req_order = req.order.as_ref().ok_or_else(|| {
                     OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field order")
                 })?;
-                let order = OrderBuilder::new().build(req_order)?;
+                let order = OrderBuilder::new().build(trade_id, prev_trade_id, req_order)?;
                 let pair = &order.trade_pair.pair();
                 let total_fee = FeeCalculator {
                     volatile_limit: Decimal::from_str(
@@ -347,18 +393,38 @@ impl OMSRpcHandler for OMS {
                 }
                 .cal(&order);
 
+                // todo: 账本和OMS整体并非原子操作, 需要考虑内存回滚机制
+                // 更新活跃订单状态
+                self.insert_order(order.clone())?;
+                // 更新账本状态
+                let match_request = Some(oms::BatchMatchRequest {
+                    trade_pair: Some(trade_pair.clone()),
+                    cmds: vec![oms::TradeCmd {
+                        trade_id: order.trade_id.clone(),
+                        prev_trade_id: order.prev_trade_id.clone(),
+                        trade_pair: Some(trade_pair.clone()),
+                        rpc_cmd: Some(oms::RpcCmd {
+                            biz_action: BizAction::PlaceOrder as i32,
+                            place_order_req: Some(req),
+                            cancel_order_req: None,
+                        }),
+                    }],
+                });
                 let spot_change_result = self
                     .ledger
                     .place_order(order, total_fee.frozen_amount)
                     .map_err(|e| OMSErr::new(e.code(), "SpotLedgerErr"))?; // todo: 优化错误传递
                 Ok(OMSChangeResult {
                     spot_change_result: vec![Ok(spot_change_result)],
-                    match_request: None,
+                    match_request,
                 })
             }
             Some(BizAction::CancelOrder) => {
                 let prev_trade_id = self.id_manager.trade_id().clone();
                 let trade_id = self.id_manager.advance_trade_id(current_seq_id);
+                // 无订单更新
+                // 无账本更新
+                // 转发撮合
                 Ok(OMSChangeResult {
                     spot_change_result: vec![],
                     match_request: Some(oms::BatchMatchRequest {
@@ -454,16 +520,23 @@ impl OrderBuilder {
         OrderBuilder { create_order: true }
     }
 
-    pub fn build(&mut self, order: oms::Order) -> Result<Order, OMSErr> {
+    pub fn build(
+        &mut self,
+        trade_id: u64,
+        prev_trade_id: u64,
+        order: &oms::Order,
+    ) -> Result<Order, OMSErr> {
         Ok(Order {
             order_id: if self.create_order {
                 IDGenerator::gen_order_id(order.account_id)
             } else {
-                order.order_id
+                order.order_id.clone()
             },
             client_order_id: order.client_order_id.clone(),
             account_id: order.account_id,
-            trade_pair: TradePair::from(order.trade_pair.unwrap()),
+            trade_pair: order.trade_pair.clone().ok_or_else(|| {
+                OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field trade_pair")
+            })?,
             direction: Direction::from_i32(order.direction).unwrap(),
             price: Decimal::from_str(&order.price)
                 .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "Invalid price"))?,
@@ -471,8 +544,8 @@ impl OrderBuilder {
                 .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "Invalid quantity"))?,
             post_only: order.post_only,
             order_type: OrderType::from_i32(order.order_type).unwrap(),
-            trade_id: order.trade_id,
-            prev_trade_id: order.prev_trade_id,
+            trade_id: trade_id,
+            prev_trade_id: prev_trade_id,
             time_in_force: TimeInForce::from_i32(order.time_in_force).unwrap(),
         })
     }

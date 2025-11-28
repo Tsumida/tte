@@ -230,7 +230,7 @@ impl ApplyThread {
                 MatchCmd::MatchReq(req) => {
                     self.handle_match_req(req).await;
                 }
-                MatchCmd::MatchAdminCmd(_admin_cmd) => {}
+                MatchCmd::MatchAdminCmd(_admin_cmd) => unimplemented!(),
             }
         }
         info!("ApplyThread stopped");

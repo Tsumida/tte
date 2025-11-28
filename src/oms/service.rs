@@ -8,7 +8,7 @@ use crate::common::{err_code, types};
 use crate::infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
 use crate::oms::error::OMSErr;
 use crate::oms::oms::{OMSMatchResultHandler, OMSRpcHandler};
-use crate::pbcode::oms::{BatchMatchRequest, BizAction, MatchResult};
+use crate::pbcode::oms::{BizAction, MatchResult};
 use crate::sequencer::api::{DefaultSequencer, SequenceSetter};
 use crate::{
     oms::oms::{OMS, OrderBuilder},
@@ -208,9 +208,9 @@ impl oms::oms_service_server::OmsService for TradeSystem {
             return Err(tonic::Status::invalid_argument("Order detail is missing"));
         }
 
-        let ord = place_order_req.order.as_ref().unwrap();
+        let order = place_order_req.order.as_ref().unwrap();
         let order = OrderBuilder::new()
-            .build(ord.clone())
+            .build(order.trade_id, order.prev_trade_id, &order) // note: trade_id=0
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid order detail: {}", e)))?;
 
         let oms = self.oms_view.read().await;

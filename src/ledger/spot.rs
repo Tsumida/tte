@@ -502,12 +502,7 @@ impl SpotLedgerRPCHandler for SpotLedger {
         let currency = match order.direction {
             Direction::Buy => order.trade_pair.quote.as_ref(),
             Direction::Sell => order.trade_pair.base.as_ref(),
-            _ => {
-                return Err(SpotLedgerErr::new(
-                    err_code::ERR_INPOSSIBLE_STATE,
-                    "Unknown directionr",
-                ));
-            }
+            _ => unreachable!(),
         };
         let before = SingleCurrencyTx {
             spot_id: spot_id,

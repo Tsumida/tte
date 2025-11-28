@@ -37,6 +37,14 @@ pub type TimeInForce = pb::TimeInForce;
 pub type OrderType = pb::OrderType;
 pub type OrderState = pb::OrderState;
 
+pub fn reverse_direction(d: &Direction) -> Direction {
+    match d {
+        Direction::Buy => Direction::Sell,
+        Direction::Sell => Direction::Buy,
+        _ => unreachable!(),
+    }
+}
+
 impl OrderState {
     pub fn is_final(&self) -> bool {
         match self {
@@ -134,9 +142,9 @@ pub struct OrderDetail {
 }
 
 impl OrderDetail {
-    pub fn new(order: &Order) -> Self {
+    pub fn new(order: Order) -> Self {
         OrderDetail {
-            original: order.clone(),
+            original: order,
             current_state: OrderState::New,
             filled_qty: Decimal::new(0, 0),
             last_trade_id: 0,

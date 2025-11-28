@@ -595,7 +595,7 @@ impl OrderBookRequestHandler for OrderBook {
                                     direction: order.order.direction,
                                     order_id: order.order.order_id.clone(),
                                     account_id: order.order.account_id,
-                                    order_state: order.order_state,
+                                    order_state: OrderState::Cancelled,
                                 }),
                             })
                         } else {
