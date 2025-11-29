@@ -26,13 +26,15 @@ use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
 struct AccountOrderList {
+    #[getset(get = "pub")]
     bid_orders: BTreeMap<OrderID, OrderDetail>,
+    #[getset(get = "pub")]
     ask_orders: BTreeMap<OrderID, OrderDetail>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct SymbolMarketData {
     trade_pair: TradePair, // 交易对
     last_price: Decimal,   // 交易对最新成交价
@@ -40,19 +42,37 @@ struct SymbolMarketData {
     last_match_id: MatchID, // oms接受match_result, 用于过滤已处理的match_id
 }
 
-#[derive(Debug, Clone, Getters)]
+#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
 pub struct OMS {
     active_orders: BTreeMap<u64, AccountOrderList>, // account_id -> bid \ ask orders
+    #[getset(get = "pub")]
     ledger: SpotLedger,
     // todo: 考虑基于定时器的缓存, 防止重复使用同一个client_order_id
     client_order_map: HashMap<String, OrderID>, // client_order_id -> order_id
     market_data: HashMap<String, SymbolMarketData>, // trade_pair.pair() -> market data
     market_currencies: HashSet<String>,
+    pub id_manager: IDManager,
+}
+
+#[derive(Getters, serde::Serialize, serde::Deserialize)]
+pub struct OMSSnapshot {
+    #[getset(get = "pub")]
+    timestamp: u64,
+    #[getset(get = "pub")]
+    active_orders: BTreeMap<u64, AccountOrderList>, // account_id -> bid
+    #[getset(get = "pub")]
+    ledger: SpotLedger,
+    #[getset(get = "pub")]
+    client_order_map: HashMap<String, OrderID>, // client_order_id -> order_id
+    #[getset(get = "pub")]
+    market_data: HashMap<String, SymbolMarketData>, // trade_pair.pair() ->
+    #[getset(get = "pub")]
+    market_currencies: HashSet<String>,
     #[getset(get = "pub")]
     id_manager: IDManager,
 }
 
-#[derive(Debug, Clone, Default, Getters)]
+#[derive(Debug, Clone, Default, Getters, serde::Serialize, serde::Deserialize)]
 pub struct IDManager {
     #[getset(get = "pub")]
     trade_id: u64,
@@ -60,20 +80,27 @@ pub struct IDManager {
     admin_id: u64,
     #[getset(get = "pub")]
     ledger_id: u64,
+    #[getset(get = "pub")]
+    seq_id: u64,
 }
 
 impl IDManager {
-    pub fn advance_trade_id(&mut self, seq_id: u64) -> u64 {
+    pub fn update_seq_id(&mut self, seq_id: u64) -> u64 {
+        self.seq_id = max(self.seq_id, seq_id);
+        self.seq_id
+    }
+
+    pub fn update_trade_id(&mut self, seq_id: u64) -> u64 {
         self.trade_id = max(self.trade_id, seq_id);
         self.trade_id
     }
 
-    pub fn advance_admin_id(&mut self, seq_id: u64) -> u64 {
+    pub fn update_admin_id(&mut self, seq_id: u64) -> u64 {
         self.admin_id = max(self.admin_id, seq_id);
         self.admin_id
     }
 
-    pub fn advance_ledger_id(&mut self, seq_id: u64) -> u64 {
+    pub fn update_ledger_id(&mut self, seq_id: u64) -> u64 {
         self.ledger_id = max(self.ledger_id, seq_id);
         self.ledger_id
     }
@@ -201,6 +228,18 @@ impl OMS {
 
     pub fn get_ledger(&self) -> &SpotLedger {
         &self.ledger
+    }
+
+    pub fn take_snapshot(&self) -> OMSSnapshot {
+        OMSSnapshot {
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            active_orders: self.active_orders.clone(),
+            ledger: self.ledger.clone(),
+            client_order_map: self.client_order_map.clone(),
+            market_data: self.market_data.clone(),
+            market_currencies: self.market_currencies.clone(),
+            id_manager: self.id_manager.clone(),
+        }
     }
 
     fn check_symbol_trading(&self, market_config: &SymbolMarketData) -> Result<(), OMSErr> {
@@ -359,7 +398,7 @@ impl OMSRpcHandler for OMS {
                 // note: 一般来说，sequencer持久化时固定ID，避免后续更新引入bug。
                 // 但trade_id和一个sequencer_id关联，因此持久化后再生成是ok的
                 let prev_trade_id = *self.id_manager.trade_id();
-                let trade_id = self.id_manager.advance_trade_id(current_seq_id);
+                let trade_id = self.id_manager.update_trade_id(current_seq_id);
 
                 let req_order = req.order.as_ref().ok_or_else(|| {
                     OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field order")
@@ -419,7 +458,7 @@ impl OMSRpcHandler for OMS {
             }
             Some(BizAction::CancelOrder) => {
                 let prev_trade_id = self.id_manager.trade_id().clone();
-                let trade_id = self.id_manager.advance_trade_id(current_seq_id);
+                let trade_id = self.id_manager.update_trade_id(current_seq_id);
                 // 无订单更新
                 // 无账本更新
                 // 转发撮合
@@ -506,8 +545,6 @@ impl OMSMatchResultHandler for OMS {
         })
     }
 }
-
-pub type OMSSnapshot = OMS;
 
 pub(crate) struct OrderBuilder {
     create_order: bool,

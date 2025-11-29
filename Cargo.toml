@@ -21,10 +21,6 @@ path = "src/server.rs"
 name = "mvp_client"
 path = "src/client.rs"
 
-[[bin]]
-name = "mvp_match_engine"
-path = "src/me.rs"
-
 
 [dependencies]
 rust_decimal ={ version = "1.39" }
@@ -50,6 +46,10 @@ opentelemetry-appender-tracing = "0.31.1"
 tonic-tracing-opentelemetry = "0.32.0"
 rdkafka = "0.38.0"
 futures = "0.3.31"
+# clap = { version = "4.5.53", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+lazy_static = "1.5.0"
 clap = { version = "4.5.53", features = ["derive"] }
 
 [build-dependencies]

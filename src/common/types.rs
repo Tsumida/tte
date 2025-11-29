@@ -55,7 +55,7 @@ impl OrderState {
 }
 
 // 订单结构体
-#[derive(Debug, Clone, Getters)]
+#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
 pub struct Order {
     #[getset(get = "pub", set = "pub")]
     pub order_id: OrderID,
@@ -127,7 +127,7 @@ impl Order {
     }
 }
 
-#[derive(Debug, Clone, Getters)]
+#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
 pub struct OrderDetail {
     #[getset(get = "pub")]
     original: Order,

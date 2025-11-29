@@ -10,8 +10,10 @@ use tracing::{error, info, instrument};
 use crate::{
     common::types::{BatchMatchReqTransfer, BatchMatchResultTransfer, MatchResult, TradePair},
     infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta},
-    match_engine::orderbook::{OrderBook, OrderBookErr},
-    pbcode::oms,
+    match_engine::orderbook::{
+        OrderBook, OrderBookErr, OrderBookSnapshot, OrderBookSnapshotHandler,
+    },
+    pbcode::oms::{self},
     sequencer::api::{DefaultSequencer, SequenceSetter},
 };
 
@@ -56,10 +58,14 @@ type SequencerReceiver = tokio::sync::mpsc::Receiver<CmdWrapper<MatchCmd>>;
 type MatchResultSender = tokio::sync::mpsc::Sender<CmdWrapper<oms::BatchMatchResult>>;
 type MatchResultReceiver = tokio::sync::mpsc::Receiver<CmdWrapper<oms::BatchMatchResult>>;
 
+#[derive(Clone)]
 pub struct MatchEngineService {
     #[allow(dead_code)]
     submit_sender: SequencerSender, // todo: admin cmd
 }
+
+unsafe impl Send for MatchEngineService {}
+unsafe impl Sync for MatchEngineService {}
 
 impl MatchEngineService {
     pub async fn run_match_engine(
@@ -122,6 +128,29 @@ impl MatchEngineService {
             },
             handlers,
         ))
+    }
+}
+
+#[tonic::async_trait]
+impl oms::match_engine_service_server::MatchEngineService for MatchEngineService {
+    // 内部使用
+    #[instrument(level = "info", skip_all)]
+    async fn take_snapshot(
+        &self,
+        _request: tonic::Request<oms::TakeSnapshotReq>,
+    ) -> std::result::Result<tonic::Response<oms::TakeSnapshotRsp>, tonic::Status> {
+        self.submit_sender
+            .send_timeout(
+                CmdWrapper::new(MatchCmd::MatchAdminCmd(oms::MatchAdminCmd {
+                    admin_action: oms::AdminAction::TakeSnapshot as i32,
+                })),
+                std::time::Duration::from_secs(1),
+            )
+            .await
+            .map_err(|e| {
+                tonic::Status::internal(format!("failed to send take_snapshot command: {}", e))
+            })?;
+        Ok(tonic::Response::new(oms::TakeSnapshotRsp {}))
     }
 }
 
@@ -226,11 +255,29 @@ impl ApplyThread {
                 break;
             }
             let cmd_wrapper = cmd_wrapper.expect("recv cmd_wrapper");
+            self.orderbook.update_seq_id(cmd_wrapper.seq_id);
             match cmd_wrapper.inner {
                 MatchCmd::MatchReq(req) => {
                     self.handle_match_req(req).await;
                 }
-                MatchCmd::MatchAdminCmd(_admin_cmd) => unimplemented!(),
+                MatchCmd::MatchAdminCmd(admin_cmd) => match admin_cmd.admin_action {
+                    x if x == oms::AdminAction::TakeSnapshot as i32 => {
+                        info!(
+                            "TakeSnapshot admin command received, current seq_id: {}",
+                            cmd_wrapper.seq_id
+                        );
+
+                        match self.orderbook.take_snapshot() {
+                            Ok(snapshot) => {
+                                self.persist_snapshot_json(snapshot).await;
+                            }
+                            Err(e) => {
+                                error!("TakeSnapshot failed: {}", e);
+                            }
+                        }
+                    }
+                    _ => {}
+                },
             }
         }
         info!("ApplyThread stopped");
@@ -279,6 +326,25 @@ impl ApplyThread {
             .await
         {
             error!("send match result error: {}", e);
+        }
+    }
+
+    async fn persist_snapshot_json(&self, snapshot: OrderBookSnapshot) {
+        let filename = format!(
+            "orderbook_snapshot_{}_{}_{}.json",
+            snapshot.trade_pair().pair(),
+            snapshot.id_manager().seq_id(),
+            chrono::Utc::now().timestamp_millis() as u64,
+        );
+        match serde_json::to_string_pretty(&snapshot) {
+            Err(e) => {
+                error!("serialize snapshot to json failed: {}", e);
+                return;
+            }
+            Ok(json) => {
+                tokio::fs::write(&filename, json).await.unwrap();
+                info!("persisted snapshot to file: {}", filename);
+            }
         }
     }
 }

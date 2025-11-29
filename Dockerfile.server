@@ -35,6 +35,7 @@ RUN apk update && apk add --no-cache ca-certificates
 # 环境变量
 ENV RUST_LOG=info \
     ENV=dev \
+    SERVER_MODE=oms \
     GRPC_SERVER_ENDPOINT=[::1]:8080 \
     TRACE_ENDPOINT=http://localhost:4318
 

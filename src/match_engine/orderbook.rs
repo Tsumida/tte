@@ -12,7 +12,7 @@ use rust_decimal::Decimal;
 use crate::common::err_code;
 use crate::common::types::{
     CancelOrderResult, Direction, FillOrderResult, FillRecord, MatchResult, Order, OrderID,
-    OrderState, OrderType, SeqID, TimeInForce,
+    OrderState, OrderType, SeqID, TimeInForce, TradePair,
 };
 use crate::pbcode::oms::{self, BizAction};
 
@@ -29,14 +29,14 @@ impl OrderBookKey {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MakerOrder {
     pub(crate) order: Order, // 不可变
     pub(crate) qty_info: MatchState,
     pub(crate) order_state: OrderState,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MatchState {
     remain_qty: Decimal, // maker剩余数量
     filled_qty: Decimal, // taker已成交数量
@@ -209,10 +209,15 @@ pub struct OrderBookLevelSnapshot {
     // pub last_seq_id: u64,
 }
 
+#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
 pub struct OrderBookSnapshot {
+    #[get = "pub"]
+    trade_pair: TradePair,
+    #[get = "pub"]
     bid_orders: Vec<MakerOrder>,
+    #[get = "pub"]
     ask_orders: Vec<MakerOrder>,
-    last_seq_id: u64,
+    #[get = "pub"]
     id_manager: IDManager,
 }
 
@@ -236,47 +241,80 @@ pub(crate) trait OrderBookRequestHandler {
     ) -> Result<MatchResult, OrderBookErr>;
 }
 
-#[derive(Debug, Clone, Getters, Default)]
-struct IDManager {
+// MatchEngine专用ID管理
+#[derive(Debug, Clone, Getters, Default, serde::Serialize, serde::Deserialize)]
+pub struct IDManager {
     #[getset(get = "pub")]
     match_id: u64,
+
+    #[getset(get = "pub")]
+    trade_id: u64,
+
+    #[getset(get = "pub")]
+    seq_id: u64,
 }
 
 impl IDManager {
     pub fn new(init_match_id: u64) -> Self {
         Self {
             match_id: init_match_id,
+            trade_id: 0,
+            seq_id: 0,
         }
     }
 
+    // OB调用, 所以可以自增
     fn advance_match_id(&mut self) -> u64 {
         self.match_id += 1;
         self.match_id
     }
+
+    // todo: 幂等过滤
+    // Sequencer-> OB
+    fn update_seq_id(&mut self, current_seq_id: u64) -> u64 {
+        self.seq_id = max(self.seq_id, current_seq_id);
+        self.seq_id
+    }
+
+    // todo: 幂等过滤
+    // OMS-> OB
+    fn update_trade_id(&mut self, current_trade_id: u64) -> u64 {
+        self.trade_id = max(self.trade_id, current_trade_id);
+        self.trade_id
+    }
 }
 
 pub struct OrderBook {
-    trade_id: SeqID, // last tradeID had ever seen. for dedup & ignore outdated request
     id_manager: IDManager,
     order_id_to_orderbook_key: HashMap<OrderID, OrderBookKey>,
     bid_orders: BTreeOrderQueue,
     ask_orders: BTreeOrderQueue,
+    trade_pair: TradePair,
 }
 
 // OrderBook需要保证顺序接收OBRequest
 impl OrderBook {
-    pub fn new() -> Self {
+    pub fn new(trade_pair: TradePair) -> Self {
         Self {
-            trade_id: 0,
             id_manager: IDManager::default(),
             order_id_to_orderbook_key: HashMap::new(),
             bid_orders: BTreeOrderQueue::new(Direction::Buy),
             ask_orders: BTreeOrderQueue::new(Direction::Sell),
+            trade_pair,
         }
     }
 
-    pub fn process_trade_cmd(&mut self, cmd: oms::TradeCmd) -> Result<MatchResult, OrderBookErr> {
-        if let Some(cmd) = cmd.rpc_cmd {
+    // todo: 考虑放到内部
+    pub fn update_seq_id(&mut self, current_seq_id: u64) -> u64 {
+        self.id_manager.update_seq_id(current_seq_id)
+    }
+
+    pub fn process_trade_cmd(
+        &mut self,
+        trade_cmd: oms::TradeCmd,
+    ) -> Result<MatchResult, OrderBookErr> {
+        if let Some(cmd) = trade_cmd.rpc_cmd {
+            self.id_manager.update_trade_id(trade_cmd.trade_id);
             match BizAction::from_i32(cmd.biz_action) {
                 Some(BizAction::PlaceOrder) => {
                     if let Some(oms::PlaceOrderReq {
@@ -318,10 +356,6 @@ impl OrderBook {
     }
 
     // seq_id由raft模块生成
-    fn advance_seq_id(&mut self, seq_id: u64) {
-        self.trade_id = max(self.trade_id, seq_id);
-    }
-
     fn post_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr> {
         // 直接加入订单簿
         let maker_order = MakerOrder {
@@ -532,10 +566,7 @@ impl OrderBook {
 
 impl OrderBookRequestHandler for OrderBook {
     fn place_order(&mut self, order: Order) -> Result<MatchResult, OrderBookErr> {
-        // if order.seq_id <= self.seq_id {
-        //     return Err(OrderBookErr::new(err_code::ERR_OB_INVALID_SEQ_ID));
-        // }
-        self.advance_seq_id(order.trade_id);
+        self.id_manager.update_trade_id(order.trade_id);
 
         if order.post_only {
             return self.post_order(order);
@@ -638,9 +669,9 @@ impl OrderBookSnapshotHandler for OrderBook {
 
     fn take_snapshot(&self) -> Result<OrderBookSnapshot, OrderBookErr> {
         Ok(OrderBookSnapshot {
+            trade_pair: self.trade_pair.clone(),
             bid_orders: self.bid_orders.take_queue_snapshot(),
             ask_orders: self.ask_orders.take_queue_snapshot(),
-            last_seq_id: self.trade_id,
             id_manager: self.id_manager.clone(),
         })
     }
@@ -665,7 +696,7 @@ impl OrderBookSnapshotHandler for OrderBook {
         let ask_orders = BTreeOrderQueue::from(s.ask_orders);
 
         Ok(OrderBook {
-            trade_id: s.last_seq_id,
+            trade_pair: s.trade_pair,
             id_manager: s.id_manager,
             order_id_to_orderbook_key: order_id_to_key,
             bid_orders,
@@ -710,13 +741,16 @@ mod test {
         price: f64,
         qty: f64,
     ) {
+        let prev_trade_id = ob.id_manager.trade_id;
+        let trade_id = prev_trade_id + 1;
+
         let order = Order {
             client_order_id: String::new(),
             post_only: true, // essential
             account_id: account_id,
             order_id: OrderID::new(),
-            trade_id: ob.trade_id + 1,
-            prev_trade_id: ob.trade_id,
+            trade_id: trade_id,
+            prev_trade_id: prev_trade_id,
             direction: direction,
             order_type: OrderType::Limit,
             time_in_force: TimeInForce::Gtk,
@@ -742,8 +776,8 @@ mod test {
             post_only: false,
             order_id: OrderID::new(),
             account_id: account_id,
-            trade_id: ob.trade_id + 1,
-            prev_trade_id: ob.trade_id,
+            trade_id: ob.id_manager.trade_id + 1,
+            prev_trade_id: ob.id_manager.trade_id,
             direction: direction,
             order_type: OrderType::Limit,
             time_in_force: TimeInForce::Gtk,
@@ -782,7 +816,7 @@ mod test {
 
     #[test]
     fn test_limit_buy_order_filled() {
-        let mut ob = OrderBook::new();
+        let mut ob = OrderBook::new(TradePair::new("BTC", "USD"));
         // ask_q: (100.0, 10.0), (101.0, 5.0), (102.0, 20.0)
         // bid: (102, 30.0)
         // match: (100.0,10.0), (101.0,5.0), (102.0,15.0)
@@ -811,7 +845,7 @@ mod test {
 
     #[test]
     fn test_limit_buy_order_partially_filled() {
-        let mut ob = OrderBook::new();
+        let mut ob = OrderBook::new(TradePair::new("BTC", "USD"));
         // ask_q: (100.0, 10.0), (101.0, 5.0), (102.0, 20.0)
         // bid: (101, 30.0)
         // match: (100.0,10.0), (101.0,5.0)
@@ -852,7 +886,7 @@ mod test {
 
     #[test]
     fn test_limit_sell_order_filled() {
-        let mut ob = OrderBook::new();
+        let mut ob = OrderBook::new(TradePair::new("BTC", "USD"));
         // bid_q: (102.0, 10.0), (101.0, 5.0), (100.0, 20.0)
         // ask: (100, 30.0)
         // match:(102.0,10.0), (101.0,5.0), (100.0,15.0)
@@ -879,7 +913,7 @@ mod test {
 
     #[test]
     fn test_limit_sell_order_partially_filled() {
-        let mut ob = OrderBook::new();
+        let mut ob = OrderBook::new(TradePair::new("BTC", "USD"));
         // bid_q: (102.0, 10.0), (101.0, 5.0), (100.0, 20.0)
         // ask_q: (101, 30.0)
         // match:(102.0,10.0), (101.0,5.0)
@@ -947,7 +981,7 @@ mod test {
 
     #[test]
     fn test_snapshot() {
-        let mut ob = OrderBook::new();
+        let mut ob = OrderBook::new(TradePair::new("BTC", "USD"));
         // sufficient level
         post_limit_order(&mut ob, 1001, Direction::Buy, 102.0, 10.0);
         post_limit_order(&mut ob, 1002, Direction::Buy, 101.0, 5.0);

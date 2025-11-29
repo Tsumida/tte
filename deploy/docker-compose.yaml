@@ -16,12 +16,28 @@ services:
     environment:
       - RUST_LOG=info
       - SERVICE_NAME=mvp_server
+      - SERVER_MODE=oms
       - TRACE_ENDPOINT=http://jaeger:4317
-      # - TRACE_ENDPOINT=http://jaeger:4318/v1/traces
       - GRPC_SERVER_ENDPOINT=0.0.0.0:8080
       - ENV=dev
     ports:
       - "8080:8080"
+    depends_on:
+      - jaeger
+      - kafka-dev
+
+  mvp_me:
+    image: mvp_server:latest
+    container_name: mvp_me
+    environment:
+      - RUST_LOG=info
+      - SERVICE_NAME=mvp_me
+      - SERVER_MODE=me
+      - TRACE_ENDPOINT=http://jaeger:4317
+      - GRPC_SERVER_ENDPOINT=0.0.0.0:8081
+      - ENV=dev
+    ports:
+      - "8081:8081"
     depends_on:
       - jaeger
       - kafka-dev
@@ -35,29 +51,17 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      # ⚠️ 关键修改 1: PLAINTEXT 监听器绑定到 0.0.0.0，允许外部连接。
-      # CONTROLLER 监听器可以在容器内部使用其主机名 (e.g., kafka-dev) 或 0.0.0.0。
-      # 为简化配置，我们使用 0.0.0.0
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      # ⚠️ 关键修改 2: 告知客户端连接 Host 上的地址。
-      # Host 上的客户端应该使用 Host IP 或 localhost:9092 连接。
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-dev:9092
-      # 控制器相关配置 (保持不变或微调，但使用 0.0.0.0)
+      # docker外部访问使用主机名 kafka-dev, 记得改hosts
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-dev:9092 
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      # ⚠️ 注意: Quorum Voters 中的地址应该是在 Docker 内部可以解析的地址。
-      # 在单容器设置中，使用 kafka-dev:9093 或 127.0.0.1:9093 即可。
-      # 这里使用 service name 以备将来扩展。
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-dev:9093
-      
-      # 其他配置 (保持不变)
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 1
-    # ⚠️ 推荐添加: 允许容器使用 service name (kafka-dev) 进行内部通信
-    # 因为 KAFKA_CONTROLLER_QUORUM_VOTERS 中使用了 service name
     extra_hosts:
       - "kafka-dev:127.0.0.1"
     volumes:

@@ -37,7 +37,7 @@ pub trait SpotLedgerMatchResultConsumer {
     ) -> Result<SpotChangeResult, SpotLedgerErr>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Spot {
     account_id: u64,
     currency: Symbol,
@@ -77,7 +77,7 @@ pub struct SpotChangeResult {
 }
 // 记录单次流程中的冻结额度，主要用于整体释放。
 // 场景：限价单撤单时要按orderID释放整个冻结额度
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FrozenReceipt {
     frozen_id: String, // 对应order_id, withdraw_id, transfer_id等
     account_id: u64,
@@ -211,7 +211,7 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SpotLedger {
     spots: BTreeMap<u64, BTreeMap<Symbol, Spot>>, // account_id -> currency -> Spot
     order_frozen_receipts: BTreeMap<String, FrozenReceipt>, // frozen_id -> FrozenReceipt

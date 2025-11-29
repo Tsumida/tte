@@ -55,8 +55,12 @@ enum BizAction{
     ReplaceOrder = 5;
     CancelOrder = 6;
     FillOrder = 7;
+}
 
-    // 100起步是内部控制指令
+enum AdminAction{
+    UndefinedAdminAction = 0;
+    TakeSnapshot = 1;
+    UpdateTradePairConfig = 2;
 }
 
 message TradePair{
@@ -91,11 +95,11 @@ message OrderDetail{
 }
 
 message OMSAdminCmd{
-    int32 admin_action = 3; 
+    int32 admin_action = 1;  // 对应AdminAction枚举
 }
 
 message MatchAdminCmd{
-    int32 admin_action = 3; 
+    int32 admin_action = 1;  // 对应AdminAction枚举
 }
 
 message RpcCmd{
@@ -275,7 +279,6 @@ message UpdateTradePairConfigReq{
 message UpdateTradePairConfigRsp{
 }
 
-
 // ================================ 业务类
 service OMSService {
     rpc PlaceOrder(PlaceOrderReq) returns (PlaceOrderRsp);
@@ -296,4 +299,9 @@ service OMSService {
     // 内部使用
     rpc TakeSnapshot(TakeSnapshotReq) returns (TakeSnapshotRsp);
     rpc UpdateTradePairConfig(UpdateTradePairConfigReq) returns (UpdateTradePairConfigRsp);
+}
+
+service MatchEngineService {
+    // 内部使用
+    rpc take_snapshot(TakeSnapshotReq) returns (TakeSnapshotRsp);
 }

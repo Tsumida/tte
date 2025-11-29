@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = tonic_build::configure()
         .build_server(true)
         .build_client(true)
+        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute("TradePair", "#[derive(Eq, Hash)]")
         .out_dir(out_dir)
         .compile(&proto_files, &[proto_path])?;

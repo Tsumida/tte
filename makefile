@@ -3,6 +3,11 @@ IMAGE_NAME := mvp_server
 IMAGE_TAG := latest
 DOCKERFILE := Dockerfile.server
 
+IMG_NAME_ME := mvp_me
+IMG_TAG_ME := latest
+DOCKERFILE_ME := Dockerfile.me
+
+
 test:
 	@cargo test --lib -- --nocapture
 
@@ -20,4 +25,5 @@ build-dev:
 # 	@rustup target add x86_64-unknown-linux-musl
 # 	@cargo build --release --bin mvp_server --target x86_64-unknown-linux-musl
 	@docker build -t $(IMAGE_NAME):$(IMAGE_TAG) -f $(DOCKERFILE) .
-	@echo "✅ 镜像构建完成: $(IMAGE_NAME):$(IMAGE_TAG)"
+	@echo "✅ mvp_server镜像构建完成: $(IMAGE_NAME):$(IMAGE_TAG)"
+	

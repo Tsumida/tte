@@ -371,9 +371,25 @@ impl oms::oms_service_server::OmsService for TradeSystem {
     #[instrument(level = "info", skip_all)]
     async fn take_snapshot(
         &self,
-        _req: tonic::Request<oms::TakeSnapshotReq>,
+        _: tonic::Request<oms::TakeSnapshotReq>,
     ) -> Result<tonic::Response<oms::TakeSnapshotRsp>, tonic::Status> {
-        todo!()
+        // save at oms_snapshot_{.tiomestamp}.json
+        let snapshot = self.oms_view.read().await.take_snapshot();
+
+        serde_json::to_writer_pretty(
+            std::fs::File::create(format!(
+                "oms_snapshot_{}_{}.json",
+                snapshot.id_manager().seq_id(),
+                snapshot.timestamp()
+            ))
+            .map_err(|e| {
+                tonic::Status::internal(format!("Failed to create snapshot file: {:?}", e))
+            })?,
+            &snapshot,
+        )
+        .map_err(|e| tonic::Status::internal(format!("Failed to write snapshot file: {:?}", e)))?;
+
+        Ok(tonic::Response::new(oms::TakeSnapshotRsp {}))
     }
 
     #[instrument(level = "info", skip_all)]
@@ -453,18 +469,16 @@ impl ApplyThread {
                 }
             }
 
-            tracing::info!("ApplyThread processing b atch of size {}", batch.len());
             for cmd in batch.drain(..) {
                 // todo: set ready if prev_seq_id <= oms.seq_id, else waits preceding cmds
                 match cmd.cmd {
                     CmdFlow::TradeCmd(trade_cmd) => {
                         // todo: validate cmd fields
                         let trade_pair = trade_cmd.trade_pair.as_ref().unwrap();
-                        match self.oms.write().await.handle_rpc_cmd(
-                            cmd.seq_id,
-                            trade_pair,
-                            trade_cmd.rpc_cmd.unwrap(),
-                        ) {
+                        let mut oms = self.oms.write().await;
+                        oms.id_manager.update_seq_id(cmd.seq_id);
+                        match oms.handle_rpc_cmd(cmd.seq_id, trade_pair, trade_cmd.rpc_cmd.unwrap())
+                        {
                             Ok(change_res) => {
                                 if let Some(req) = change_res.match_request {
                                     match_requests.push(req);
