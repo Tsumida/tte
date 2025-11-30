@@ -378,7 +378,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
 
         serde_json::to_writer_pretty(
             std::fs::File::create(format!(
-                "oms_snapshot_{}_{}.json",
+                "./snapshot/oms_snapshot_{}_{}.json",
                 snapshot.id_manager().seq_id(),
                 snapshot.timestamp()
             ))

@@ -331,7 +331,7 @@ impl ApplyThread {
 
     async fn persist_snapshot_json(&self, snapshot: OrderBookSnapshot) {
         let filename = format!(
-            "orderbook_snapshot_{}_{}_{}.json",
+            "./snapshot/orderbook_snapshot_{}_{}_{}.json",
             snapshot.trade_pair().pair(),
             snapshot.id_manager().seq_id(),
             chrono::Utc::now().timestamp_millis() as u64,
