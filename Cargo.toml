@@ -3,30 +3,20 @@ name = "tte"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = [
+    "crates/core",
+    "crates/infra",
+    "crates/sequencer" ,
+    "crates/ledger" ,
+    "crates/match_engine"  ,
+    "crates/oms",
+    "crates/server",
+    "crates/client",
+    "crates/testkit",
+]
 
-# 启用构建脚本
-build = "src/build/build.rs"
-
-
-[lib]
-name = "trade_engine"
-path = "src/lib.rs"
-
-[[bin]]
-name = "mvp_server"
-path = "src/server.rs"
-
-
-[[bin]]
-name = "mvp_client"
-path = "src/client.rs"
-
-[[bin]]
-name = "mvp_match_engine"
-path = "src/me.rs"
-
-
-[dependencies]
+[workspace.dependencies]
 rust_decimal ={ version = "1.39" }
 tonic = "0.9"
 prost = "0.11"
@@ -50,11 +40,15 @@ opentelemetry-appender-tracing = "0.31.1"
 tonic-tracing-opentelemetry = "0.32.0"
 rdkafka = "0.38.0"
 futures = "0.3.31"
+# clap = { version = "4.5.53", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+lazy_static = "1.5.0"
 clap = { version = "4.5.53", features = ["derive"] }
+tonic-build = "0.9"
+
 
 [build-dependencies]
 tonic-build = { version = "0.9"}
 
-[[bench]]
-name = "ledger"
-harness = false
+

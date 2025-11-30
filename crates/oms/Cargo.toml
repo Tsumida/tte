@@ -1,0 +1,40 @@
+[package]
+name = "tte-oms"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+
+[dependencies]
+tokio.workspace = true
+tonic.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+lazy_static.workspace = true
+getset.workspace = true
+chrono.workspace = true
+
+futures.workspace = true
+
+tracing.workspace = true
+opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-semantic-conventions.workspace = true
+tracing-appender.workspace = true
+opentelemetry-appender-tracing.workspace = true
+tonic-tracing-opentelemetry.workspace = true
+
+rdkafka.workspace = true
+
+tte-core = { path = "../core" }
+tte-infra = { path = "../infra" }
+tte-sequencer = { path = "../sequencer" }
+tte-ledger = { path = "../ledger" }
