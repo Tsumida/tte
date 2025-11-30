@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use tonic::transport::Channel;
 use tracing_subscriber;
-use trade_engine::pbcode::oms::{
+use tte_core::pbcode::oms::{
     self, PlaceOrderReq, TradePair, match_engine_service_client, oms_service_client,
 };
 

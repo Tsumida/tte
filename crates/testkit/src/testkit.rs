@@ -2,9 +2,9 @@
 
 use rust_decimal::Decimal;
 
-use crate::pbcode::oms::BizAction;
+use tte_core::pbcode::oms::BizAction;
 
-use crate::common::types::*; // 假设你上面的结构体定义放在 types.rs
+use tte_core::types::*; // 假设你上面的结构体定义放在 types.rs
 
 /// 模拟下单
 pub fn new_limit_order(

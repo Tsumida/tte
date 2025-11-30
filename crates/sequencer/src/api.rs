@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 // use tokio::sync::oneshot;
 use tonic::async_trait;
 
-use crate::sequencer::error::SequencerErr;
+use crate::error::SequencerErr;
 
 pub trait SequenceSetter {
     fn set_seq_id(&mut self, seq_id: u64, prev_seq_id: u64);

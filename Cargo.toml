@@ -8,6 +8,7 @@ members = [
     "crates/core",
     "crates/infra",
     "crates/sequencer" ,
+    "crates/ledger" ,
     "crates/match_engine"  ,
     "crates/oms",
     "crates/server",
@@ -50,7 +51,7 @@ tonic-build = "0.9"
 [build-dependencies]
 tonic-build = { version = "0.9"}
 
-[[bench]]
-name = "ledger"
-harness = false
+# [[bench]]
+# name = "ledger"
+# harness = false
 

@@ -7,15 +7,14 @@ use rdkafka::Message;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{error, info, instrument};
 
-use crate::{
-    common::types::{BatchMatchReqTransfer, BatchMatchResultTransfer, MatchResult, TradePair},
-    infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta},
-    match_engine::orderbook::{
-        OrderBook, OrderBookErr, OrderBookSnapshot, OrderBookSnapshotHandler,
-    },
+use tte_core::{
     pbcode::oms::{self},
-    sequencer::api::{DefaultSequencer, SequenceSetter},
+    types::{BatchMatchReqTransfer, BatchMatchResultTransfer, MatchResult, TradePair},
 };
+
+use crate::orderbook::{OrderBook, OrderBookErr, OrderBookSnapshot, OrderBookSnapshotHandler};
+use tte_infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
+use tte_sequencer::api::{DefaultSequencer, SequenceSetter};
 
 #[derive(Debug, Clone)]
 pub enum MatchCmd {

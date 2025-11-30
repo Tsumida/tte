@@ -26,3 +26,11 @@ opentelemetry-semantic-conventions.workspace = true
 tracing-appender.workspace = true
 opentelemetry-appender-tracing.workspace = true
 tonic-tracing-opentelemetry.workspace = true
+clap.workspace = true
+chrono.workspace = true
+
+tte-core = { path = "../core" }
+# tte-infra = { path = "../infra" }
+# tte-oms = { path = "../oms" }
+# tte-ledger = { path = "../ledger" }
+# tte-me = { path = "../match_engine" }

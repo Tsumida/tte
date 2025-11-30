@@ -1,17 +1,17 @@
 use rust_decimal_macros::dec;
 use tonic::transport::Server;
 use tracing::info;
-use trade_engine::infra::config::AppConfig;
-use trade_engine::infra::kafka::{ConsumerConfig, ProducerConfig};
-use trade_engine::pbcode::oms::match_engine_service_server;
-use trade_engine::{
-    common::types::TradePair,
-    match_engine::service::MatchEngineService,
-    oms::{oms::OMS, service},
-    pbcode::oms::{self, oms_service_server},
-};
+use tte_core::pbcode::oms::match_engine_service_server;
 
-use trade_engine::match_engine::orderbook;
+use tte_core::{
+    pbcode::oms::{self, oms_service_server},
+    types::TradePair,
+};
+use tte_infra::config::AppConfig;
+use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
+use tte_me::orderbook;
+use tte_me::service::MatchEngineService;
+use tte_oms::{oms::OMS, service::TradeSystem};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -79,7 +79,7 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
     // todo: load OMS from last snapshot
     let mut oms = OMS::new();
     oms.with_init_ledger(balances).with_market_data(market_data);
-    let (svc, _bg_tasks) = service::TradeSystem::run_trade_system(
+    let (svc, _bg_tasks) = TradeSystem::run_trade_system(
         oms,
         config
             .kafka_producers()

@@ -2,3 +2,27 @@
 name = "tte-ledger"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+
+[dependencies]
+tokio.workspace = true
+tonic.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+lazy_static.workspace = true
+getset.workspace = true
+chrono.workspace = true
+
+futures.workspace = true
+tracing.workspace = true
+
+tte-core = { path = "../core" }
+tte-infra = { path = "../infra" }
+tte-testkit = { path = "../testkit" }
+tte-sequencer = { path = "../sequencer" }

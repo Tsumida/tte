@@ -9,12 +9,12 @@ use std::{cmp::min, collections::BTreeMap};
 use getset::Getters;
 use rust_decimal::Decimal;
 
-use crate::common::err_code;
-use crate::common::types::{
+use tte_core::err_code;
+use tte_core::pbcode::oms::{self, BizAction};
+use tte_core::types::{
     CancelOrderResult, Direction, FillOrderResult, FillRecord, MatchResult, Order, OrderID,
     OrderState, OrderType, SeqID, TimeInForce, TradePair,
 };
-use crate::pbcode::oms::{self, BizAction};
 
 // 订单簿键
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -723,16 +723,16 @@ impl std::fmt::Display for OrderBookErr {
 
 #[cfg(test)]
 mod test {
-    use crate::common::types::{
-        Direction, Order, OrderID, OrderState, OrderType, TimeInForce, TradePair,
-    };
-    use crate::match_engine::orderbook::{
+    use crate::orderbook::{
         KeyExt, MatchResult, OrderBook, OrderBookErr, OrderBookKey, OrderBookRequestHandler,
         OrderBookSnapshotHandler,
     };
     use rust_decimal::Decimal;
     use rust_decimal::prelude::FromPrimitive;
     use rust_decimal_macros::dec;
+    use tte_core::types::{
+        Direction, Order, OrderID, OrderState, OrderType, TimeInForce, TradePair,
+    };
 
     fn post_limit_order(
         ob: &mut OrderBook,

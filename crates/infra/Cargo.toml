@@ -27,6 +27,7 @@ opentelemetry-semantic-conventions.workspace = true
 tracing-appender.workspace = true
 opentelemetry-appender-tracing.workspace = true
 tonic-tracing-opentelemetry.workspace = true
+
 rdkafka.workspace = true
 
 tte-core = { path = "../core" }

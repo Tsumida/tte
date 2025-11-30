@@ -3,23 +3,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::common::types::{BatchMatchResultTransfer, TradePair};
-use crate::common::{err_code, types};
-use crate::infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
-use crate::oms::error::OMSErr;
-use crate::oms::oms::{OMSMatchResultHandler, OMSRpcHandler};
-use crate::pbcode::oms::{BizAction, MatchResult};
-use crate::sequencer::api::{DefaultSequencer, SequenceSetter};
-use crate::{
-    oms::oms::{OMS, OrderBuilder},
-    pbcode::oms,
-};
+use crate::error::OMSErr;
+use crate::oms::{OMS, OrderBuilder};
+use crate::oms::{OMSMatchResultHandler, OMSRpcHandler};
 use futures::StreamExt;
 use prost::Message as _;
 use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{error, info, instrument, warn};
+use tte_core::pbcode::oms;
+use tte_core::types::{BatchMatchResultTransfer, TradePair};
+use tte_core::{err_code, types};
+use tte_infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
+use tte_sequencer::api::{DefaultSequencer, SequenceSetter};
 
 type InformSender = oneshot::Sender<Informer>;
 type InformReceiver = oneshot::Receiver<Informer>;
@@ -80,7 +77,7 @@ impl OMSCmd {
                     prev_trade_id: 0,
                     trade_pair: Some(trade_pair.clone()),
                     rpc_cmd: Some(oms::RpcCmd {
-                        biz_action: BizAction::PlaceOrder as i32,
+                        biz_action: oms::BizAction::PlaceOrder as i32,
                         place_order_req: Some(req),
                         cancel_order_req: None,
                     }),
@@ -103,7 +100,7 @@ impl OMSCmd {
                     prev_trade_id: 0,
                     trade_pair: Some(trade_pair.clone()),
                     rpc_cmd: Some(oms::RpcCmd {
-                        biz_action: BizAction::CancelOrder as i32,
+                        biz_action: oms::BizAction::CancelOrder as i32,
                         place_order_req: None,
                         cancel_order_req: Some(req),
                     }),
@@ -547,15 +544,15 @@ impl ApplyThread {
     }
 
     // todo: order events
-    async fn handle_match_result(oms: &mut OMS, mr: &MatchResult) -> Result<(), OMSErr> {
-        let action = BizAction::from_i32(mr.action).ok_or_else(|| {
+    async fn handle_match_result(oms: &mut OMS, mr: &oms::MatchResult) -> Result<(), OMSErr> {
+        let action = oms::BizAction::from_i32(mr.action).ok_or_else(|| {
             OMSErr::new(
                 err_code::ERR_OMS_INVALID_MATCH_RESULT,
                 "invalid biz_action in match result",
             )
         })?;
         match action {
-            BizAction::FillOrder => {
+            oms::BizAction::FillOrder => {
                 for record in &mr.records {
                     match oms.handle_success_fill(record) {
                         Ok(_change_res) => {
@@ -570,11 +567,11 @@ impl ApplyThread {
                     };
                 }
             }
-            BizAction::PlaceOrder => {
+            oms::BizAction::PlaceOrder => {
                 // ignore
                 info!("Ignore PlaceOrder match result");
             }
-            BizAction::CancelOrder => {
+            oms::BizAction::CancelOrder => {
                 if let Some(result) = mr.cancel_result.as_ref() {
                     oms.handle_success_cancel(result)?;
                 } else {

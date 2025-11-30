@@ -9,12 +9,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use rust_decimal::Decimal;
 
-use crate::{
-    common::{
-        err_code::{self, ERR_INPOSSIBLE_STATE, TradeEngineErr},
-        types::{CancelOrderResult, Direction, FillRecord, Order, SeqID, Symbol},
-    },
+use tte_core::{
+    err_code::{self, ERR_INPOSSIBLE_STATE, TradeEngineErr},
     pbcode::oms::BizAction,
+    types::{CancelOrderResult, Direction, FillRecord, Order, SeqID, Symbol},
 };
 
 pub trait SpotLedgerRPCHandler {
@@ -352,7 +350,7 @@ impl SpotLedger {
     }
 
     // 新增Spot，并返回变化前的Spot
-    pub(crate) fn add_deposit(
+    pub fn add_deposit(
         &mut self,
         account_id: u64,
         currency: &str,
@@ -552,11 +550,11 @@ impl std::fmt::Display for SpotLedgerErr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::testkit as spotkit;
-    use crate::ledger::testkit::add_balance;
-    use crate::testkit::testkit;
+    use crate::testkit as spotkit;
+    use crate::testkit::add_balance;
     use rust_decimal::prelude::FromPrimitive;
     use rust_decimal_macros::dec;
+    use tte_testkit::testkit;
 
     #[test]
     fn test_place_order() {
