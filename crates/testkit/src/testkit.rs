@@ -71,6 +71,43 @@ pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchRes
     }
 }
 
+pub fn fullfill_both(buy: &Order, sell: &Order, qty: Decimal) -> MatchResult {
+    let symbol = buy.trade_pair.clone();
+    let mut match_records = vec![];
+
+    // 第一次成交 0.5 BTC
+    match_records.push(FillRecord {
+        match_id: 1,
+        prev_match_id: 0,
+        price: sell.price,
+        qty: qty,
+        direction: Direction::Buy,
+        taker_order_id: buy.order_id.clone(),
+        taker_account_id: buy.account_id,
+        taker_state: OrderState::Filled,
+        maker_order_id: sell.order_id.clone(),
+        maker_account_id: sell.account_id,
+        maker_state: OrderState::Filled,
+        is_taker_fulfilled: true,
+        is_maker_fulfilled: true,
+        trade_pair: symbol.clone(),
+    });
+
+    let fill_result = FillOrderResult {
+        original_order: buy.clone(),
+        trade_pair: symbol.clone(),
+        results: match_records,
+        order_state: OrderState::Filled,
+        total_filled_qty: qty,
+    };
+
+    MatchResult {
+        action: BizAction::FillOrder,
+        fill_result: Some(fill_result),
+        cancel_result: None,
+    }
+}
+
 // 模拟撤单
 pub fn cancel_buy_limit_order(buy: &Order) -> MatchResult {
     let symbol = buy.trade_pair.clone();
