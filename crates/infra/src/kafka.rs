@@ -1,7 +1,7 @@
 use getset::Getters;
 use rdkafka::{Message, consumer::Consumer, message::BorrowedMessage};
 
-use crate::pbcode::oms::TradePair;
+use tte_core::pbcode::oms::TradePair;
 
 #[derive(Debug, Clone, Getters)]
 pub struct ProducerConfig {

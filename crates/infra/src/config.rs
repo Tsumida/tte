@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::infra::kafka::{ConsumerConfig, ProducerConfig};
+use crate::kafka::{ConsumerConfig, ProducerConfig};
 use getset::Getters;
 use opentelemetry::{
     global,

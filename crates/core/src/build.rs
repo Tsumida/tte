@@ -1,4 +1,5 @@
 //！ Builder for the whole trade engine
+use tonic_build;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // path: workdir/src/proto/oms.pb

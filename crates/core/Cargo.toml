@@ -1,0 +1,16 @@
+[package]
+name = "tte-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rust_decimal.workspace = true 
+prost.workspace = true
+tonic.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+getset.workspace = true

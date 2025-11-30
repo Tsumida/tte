@@ -5,7 +5,6 @@ use getset::Getters;
 use prost::Message;
 use rust_decimal::Decimal;
 
-// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub type TradePair = pb::TradePair;
 
 impl TradePair {
