@@ -51,7 +51,4 @@ tonic-build = "0.9"
 [build-dependencies]
 tonic-build = { version = "0.9"}
 
-# [[bench]]
-# name = "ledger"
-# harness = false
 

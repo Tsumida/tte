@@ -1,27 +1,28 @@
 # --- 阶段 1: Builder (编译阶段) ---
-# 使用 clux/muslrust 镜像。它预装了 Musl 工具链和所有静态链接 librdkafka 所需的依赖。
+# 使用 clux/muslrust 镜像。
 FROM clux/muslrust:1.91.1-stable-2025-11-26 AS builder
 
 # 工作目录
 WORKDIR /home/rust/src
 
-# 1. 复制 Cargo.toml 和 Cargo.lock，为依赖缓存打基础。
+# 1. 复制所有工作空间所需的文件
+# 复制顶层的 Cargo.toml 和 Cargo.lock
 COPY Cargo.toml Cargo.lock ./
+# 复制所有 crate 的 Cargo.toml，这是构建依赖所必需的
+COPY crates/*/Cargo.toml crates/
 
 # 2. **关键优化：依赖项缓存层**
-# 创建一个空的 main.rs 文件。我们只需要编译依赖项，而不需要编译本地代码。
-# cargo build 会下载和编译所有依赖 crates，并将它们存储在 /home/rust/src/target/
-# 只要 Cargo.toml 或 Cargo.lock 不变，这一层就会被缓存，极大地减少后续构建时间。
+# 在工作空间中，我们使用 --workspace 来编译所有依赖
 RUN mkdir -p src/ && echo "fn main() {}" > src/main.rs && \
-    cargo build --release || true && \
+    cargo build --release --workspace || true && \
     rm -rf src/
 
-# 3. 复制所有应用程序源代码 (由于有 .dockerignore，此步骤耗时会大幅下降)
+# 3. 复制所有应用程序源代码 (包括所有 crates 目录)
 COPY . .
 
-# 4. **最终编译** (由于依赖项已经被缓存，此步骤现在只需要编译您的本地代码)
-# 这一步会利用上一步缓存的 target 目录，大幅加速。
-RUN cargo build --release
+# 4. **最终编译** (只需编译本地代码)
+# 🎯 指定要编译的二进制 crate: 'server'
+RUN cargo build --release --package tte-server --bin mvp_server
 
 # --- 阶段 2: Final (最终镜像) ---
 # 保持不变，使用最小化的 Alpine
@@ -30,14 +31,14 @@ FROM alpine:3.20.8
 # 最终镜像的工作目录
 WORKDIR /app
 
-# 从 builder 阶段复制编译好的静态二进制文件
-# 在 clux/muslrust 中，target 目录默认就是这个路径
+# 🎯 从 builder 阶段复制编译好的静态二进制文件
+# --bin server 编译出的可执行文件名默认为 crate 名称 'server'
 COPY --from=builder /home/rust/src/target/x86_64-unknown-linux-musl/release/mvp_server /app/mvp_server
 
 # 确保 Alpine 中包含运行 librdkafka 可能需要的 CA 证书
 RUN mkdir -p /app/snapshot && apk update && apk add --no-cache ca-certificates
 
-# 环境变量
+# 环境变量 (假设 server crate 对应你原来的 OMS 角色)
 ENV RUST_LOG=info \
     ENV=dev \
     SERVER_MODE=oms \
@@ -48,4 +49,5 @@ ENV RUST_LOG=info \
 EXPOSE 8080
 
 # 启动命令
+# 🎯 运行新的二进制文件 'server'
 ENTRYPOINT ["/app/mvp_server"]
