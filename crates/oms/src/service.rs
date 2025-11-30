@@ -7,6 +7,7 @@ use crate::error::OMSErr;
 use crate::oms::{OMS, OrderBuilder};
 use crate::oms::{OMSMatchResultHandler, OMSRpcHandler};
 use futures::StreamExt;
+use getset::Getters;
 use prost::Message as _;
 use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
@@ -21,11 +22,15 @@ use tte_sequencer::api::{DefaultSequencer, SequenceSetter};
 type InformSender = oneshot::Sender<Informer>;
 type InformReceiver = oneshot::Receiver<Informer>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Getters)]
 struct Informer {
+    #[get(copy)]
     seq_id: u64,
+    #[get(copy)]
     prev_seq_id: u64,
+    #[get(copy)]
     is_success: bool,
+    #[get(pub)]
     err: Option<OMSErr>,
 }
 
@@ -226,9 +231,15 @@ impl oms::oms_service_server::OmsService for TradeSystem {
             .map_err(|e| tonic::Status::internal(format!("Sequencer append failed: {:?}", e)))?;
 
         // todo: timeout
-        let _ = rsp_recv
+        let resp = rsp_recv
             .await
             .map_err(|e| tonic::Status::internal(format!("Failed to receive response: {:?}", e)))?;
+        if !resp.is_success() {
+            tonic::Status::internal(format!(
+                "Place order failed: {:?}",
+                resp.err.as_ref().unwrap()
+            ));
+        }
 
         tracing::info!(
             "PlaceOrder done, dur={} ms",
@@ -468,6 +479,7 @@ impl ApplyThread {
 
             for cmd in batch.drain(..) {
                 // todo: set ready if prev_seq_id <= oms.seq_id, else waits preceding cmds
+                let mut err = None;
                 match cmd.cmd {
                     CmdFlow::TradeCmd(trade_cmd) => {
                         // todo: validate cmd fields
@@ -486,6 +498,7 @@ impl ApplyThread {
                                     "OMS cmd(trade_id={}, prev={}) error: {:?}",
                                     cmd.seq_id, cmd.prev_seq_id, e
                                 );
+                                err = Some(e);
                             }
                         }
                     }
@@ -517,14 +530,14 @@ impl ApplyThread {
                         .send(Informer {
                             seq_id: cmd.seq_id,
                             prev_seq_id: cmd.prev_seq_id,
-                            is_success: true,
-                            err: None,
+                            is_success: err.is_none(),
+                            err,
                         })
                         .is_err()
                     {
                         warn!(
                             "ApplyThread: failed to send informer for seq_id={}",
-                            cmd.seq_id
+                            cmd.seq_id,
                         );
                     }
                 }

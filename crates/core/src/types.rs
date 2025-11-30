@@ -186,24 +186,24 @@ pub struct FillRecord {
     pub trade_pair: TradePair,
 }
 
-impl From<&pb::FillRecord> for FillRecord {
-    fn from(mr: &pb::FillRecord) -> Self {
-        FillRecord {
+impl FillRecord {
+    pub fn from_pb(mr: &pb::FillRecord) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(FillRecord {
             match_id: mr.match_id,
             prev_match_id: mr.prev_match_id,
-            price: Decimal::from_str_exact(&mr.price).unwrap_or(Decimal::new(0, 0)),
-            qty: Decimal::from_str_exact(&mr.quantity).unwrap_or(Decimal::new(0, 0)),
-            direction: pb::Direction::from_i32(mr.direction).unwrap_or(pb::Direction::Buy),
+            price: Decimal::from_str_exact(&mr.price)?,
+            qty: Decimal::from_str_exact(&mr.quantity)?,
+            direction: pb::Direction::from_i32(mr.direction).ok_or("unknown direction")?,
             taker_order_id: mr.taker_order_id.clone(),
             taker_account_id: mr.taker_account_id,
-            taker_state: pb::OrderState::from_i32(mr.taker_state).unwrap_or(pb::OrderState::New),
+            taker_state: pb::OrderState::from_i32(mr.taker_state).ok_or("unknown order state")?,
             maker_order_id: mr.maker_order_id.clone(),
             maker_account_id: mr.maker_account_id,
-            maker_state: pb::OrderState::from_i32(mr.maker_state).unwrap_or(pb::OrderState::New),
+            maker_state: pb::OrderState::from_i32(mr.maker_state).ok_or("unknown order state")?,
             is_taker_fulfilled: mr.is_taker_fulfilled,
             is_maker_fulfilled: mr.is_maker_fulfilled,
-            trade_pair: mr.trade_pair.clone().unwrap(),
-        }
+            trade_pair: mr.trade_pair.clone().ok_or("missing trade pair")?.into(),
+        })
     }
 }
 

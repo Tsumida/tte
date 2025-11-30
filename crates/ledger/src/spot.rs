@@ -1,8 +1,3 @@
-//!
-//!
-//!
-
-// allow dead code for incomplete implementation
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
@@ -170,14 +165,14 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
         if let Some(receipt) = &mut self.frozen_receipt {
             if receipt.remain_frozen < amount {
                 return Err(SpotLedgerErr::new(
-                    err_code::ERR_OMS_PRICE_OUT_OF_RANGE,
+                    err_code::ERR_LEDGER_INSUFFICIENT_FROZEN,
                     "Release amount exceeds remaining frozen amount",
                 ));
             }
             let spot = self.spot.as_mut().unwrap();
             if spot.frozen < amount {
                 return Err(SpotLedgerErr::new(
-                    err_code::ERR_INPOSSIBLE_STATE,
+                    err_code::ERR_LEDGER_INSUFFICIENT_FROZEN,
                     "Insufficient frozen amount to release",
                 ));
             }

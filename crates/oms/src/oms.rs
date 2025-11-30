@@ -179,6 +179,10 @@ impl OMS {
         self
     }
 
+    pub fn set_order_id(req: &mut oms::Order) {
+        req.order_id = IDGenerator::gen_order_id(req.account_id);
+    }
+
     pub fn seq_id(&self) -> SeqID {
         self.id_manager.trade_id
     }
@@ -388,22 +392,23 @@ impl OMSRpcHandler for OMS {
     ) -> Result<OMSChangeResult, OMSErr> {
         match BizAction::from_i32(cmd.biz_action) {
             Some(oms::BizAction::PlaceOrder) => {
-                let req = cmd.place_order_req.ok_or_else(|| {
+                let mut req = cmd.place_order_req.ok_or_else(|| {
                     OMSErr::new(
                         err_code::ERR_INVALID_REQUEST,
                         "Missing field place_order_req",
                     )
                 })?;
+                let req_order = req.order.as_mut().ok_or_else(|| {
+                    OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field order")
+                })?;
+                Self::set_order_id(req_order);
 
                 // note: 一般来说，sequencer持久化时固定ID，避免后续更新引入bug。
                 // 但trade_id和一个sequencer_id关联，因此持久化后再生成是ok的
                 let prev_trade_id = *self.id_manager.trade_id();
                 let trade_id = self.id_manager.update_trade_id(current_seq_id);
 
-                let req_order = req.order.as_ref().ok_or_else(|| {
-                    OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field order")
-                })?;
-                let mut order = OrderBuilder::new().build(trade_id, prev_trade_id, req_order)?;
+                let order = OrderBuilder::new().build(trade_id, prev_trade_id, req_order)?;
                 let pair = &order.trade_pair.pair();
                 let total_fee = FeeCalculator {
                     volatile_limit: Decimal::from_str(
@@ -431,7 +436,6 @@ impl OMSRpcHandler for OMS {
 
                 // todo: 账本和OMS整体并非原子操作, 需要考虑内存回滚机制
                 // 更新活跃订单状态
-                order.order_id = IDGenerator::gen_order_id(order.account_id);
                 self.insert_order(order.clone())?;
                 // 更新账本状态
                 let match_request = Some(oms::BatchMatchRequest {
@@ -489,7 +493,10 @@ impl OMSRpcHandler for OMS {
 
 impl OMSMatchResultHandler for OMS {
     fn handle_success_fill(&mut self, record: &oms::FillRecord) -> Result<OMSChangeResult, OMSErr> {
-        let mr = FillRecord::from(record);
+        let mr = FillRecord::from_pb(record).map_err(|e| {
+            error!("FillRecord::from_pb failed: {}", e);
+            OMSErr::new(err_code::ERR_OMS_MATCH_RESULT_FAILED, "invalid fill record")
+        })?;
         let match_id = mr.match_id;
 
         // 更新order状态

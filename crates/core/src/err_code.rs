@@ -28,6 +28,7 @@ pub static ERR_OMS_MATCH_RESULT_FAILED: i32 = 100209; // 撮合结果处理失�
 pub static ERR_LEDGER_INSUFFICIENT_BALANCE: i32 = 100301; // 余额不足
 pub static ERR_LEDGER_INVALID_ACCOUNT: i32 = 100302; // 无效账户
 pub static ERR_LEDGER_INVALID_FROZEN_ID: i32 = 100303; // 无效冻结ID
+pub static ERR_LEDGER_INSUFFICIENT_FROZEN: i32 = 100304; // 冻结释放数量不足
 
 pub trait TradeEngineErr {
     fn module(&self) -> &'static str;
