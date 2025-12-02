@@ -9,6 +9,7 @@ use opentelemetry::{
 use opentelemetry_otlp::WithExportConfig;
 use tracing::{Level, info};
 use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{Layer, Registry, filter, layer::SubscriberExt};
 
 #[derive(Debug, Clone)]
@@ -114,14 +115,12 @@ impl AppConfig {
 
         let tracer = provider.tracer(self.app_name().clone());
         let subscriber = Registry::default()
+            .with(EnvFilter::from_default_env()) // filter from RUST_LOG
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_file(true)
                     .with_line_number(true)
-                    .with_thread_ids(true)
-                    .with_filter(tracing_subscriber::filter::LevelFilter::from_level(
-                        Level::INFO,
-                    )),
+                    .with_thread_ids(true),
             ) // stdout logs
             .with(
                 OpenTelemetryLayer::new(tracer).with_filter(filter::filter_fn(|metadata| {

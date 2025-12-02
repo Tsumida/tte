@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use rdkafka::Message;
 use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 use tte_core::{
     pbcode::oms::{self},
@@ -16,7 +16,7 @@ use crate::orderbook::{OrderBook, OrderBookErr, OrderBookSnapshot, OrderBookSnap
 use tte_infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
 use tte_sequencer::api::{DefaultSequencer, SequenceSetter};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MatchCmd {
     MatchReq(oms::BatchMatchRequest),
     MatchAdminCmd(oms::MatchAdminCmd),
@@ -85,6 +85,7 @@ impl MatchEngineService {
             .get(&result_topic)
             .expect("missing match-engine producer config");
 
+        // todo: sequencer持久化恢复
         let (sequencer, sequencer_sender, sequencer_receiver) =
             DefaultSequencer::<CmdWrapper<MatchCmd>>::new(0, batch_size);
 
@@ -220,6 +221,12 @@ impl MatchReqConsumer {
         let batch_match_req = BatchMatchReqTransfer::deserialize(payload).expect("deserialize");
         let cmd = MatchCmd::MatchReq(batch_match_req);
         let cmd_wrapper = CmdWrapper::new(cmd);
+
+        debug!(
+            "Sending match request to sequencer, payload={}",
+            serde_json::to_string(&cmd_wrapper.inner).unwrap()
+        );
+
         self.sequencer_sender
             .send(cmd_wrapper)
             .await
@@ -282,7 +289,7 @@ impl ApplyThread {
         info!("ApplyThread stopped");
     }
 
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     pub async fn handle_match_req(&mut self, batch_match_req: oms::BatchMatchRequest) {
         let mut match_result_buffer = Vec::with_capacity(batch_match_req.cmds.len());
         for cmd in batch_match_req.cmds {
@@ -368,7 +375,7 @@ impl MatchResultProducer {
         info!("{} stopped", &thread_name);
     }
 
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     async fn send(&self, batch_match_result: oms::BatchMatchResult) {
         let key = format!("match_result_{}", self.producer_cfg.trade_pair.pair());
         let buf = &BatchMatchResultTransfer::serialize(&batch_match_result)

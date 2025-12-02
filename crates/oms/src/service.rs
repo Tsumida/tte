@@ -12,8 +12,9 @@ use prost::Message as _;
 use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
 use tokio::sync::{RwLock, mpsc, oneshot};
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 use tte_core::pbcode::oms;
+use tte_core::precision;
 use tte_core::types::{BatchMatchResultTransfer, TradePair};
 use tte_core::{err_code, types};
 use tte_infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
@@ -68,11 +69,13 @@ impl SequenceSetter for OMSCmd {
     }
 }
 
+// 注意这里的id都是空白的，需要后续修改
 impl OMSCmd {
-    fn place_order_cmd(req: oms::PlaceOrderReq) -> (Self, InformReceiver) {
+    fn place_order_cmd_without_id(req: oms::PlaceOrderReq) -> (Self, InformReceiver) {
         let (rsp_chan, rsp_recv) = oneshot::channel();
         // refactor: avoid unwrap
         let trade_pair = req.order.as_ref().unwrap().trade_pair.as_ref().unwrap();
+
         (
             OMSCmd {
                 seq_id: 0,
@@ -93,7 +96,7 @@ impl OMSCmd {
         )
     }
 
-    fn cancel_order_cmd(req: oms::CancelOrderReq) -> (Self, InformReceiver) {
+    fn cancel_order_cmd_without_id(req: oms::CancelOrderReq) -> (Self, InformReceiver) {
         let (rsp_chan, rsp_recv) = oneshot::channel();
         let trade_pair = TradePair::new(&req.base, &req.quote);
         (
@@ -200,7 +203,7 @@ impl TradeSystem {
 // Impl RPC Handler
 #[tonic::async_trait]
 impl oms::oms_service_server::OmsService for TradeSystem {
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     async fn place_order(
         &self,
         req: tonic::Request<oms::PlaceOrderReq>,
@@ -223,7 +226,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         drop(oms); // critical: avoid deadlock
 
         // todo, write order into sequencer channel and wait for response.
-        let (cmd, rsp_recv) = OMSCmd::place_order_cmd(place_order_req.clone());
+        let (cmd, rsp_recv) = OMSCmd::place_order_cmd_without_id(place_order_req.clone());
         let start_time = std::time::Instant::now();
         let _ = self
             .propose(cmd)
@@ -249,7 +252,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         Ok(tonic::Response::new(oms::PlaceOrderRsp {}))
     }
 
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     async fn cancel_order(
         &self,
         req: tonic::Request<oms::CancelOrderReq>,
@@ -287,7 +290,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         }
         drop(oms); // critical: avoid deadlock
 
-        let (cmd, rsp_recv) = OMSCmd::cancel_order_cmd(cancel_order_req.clone());
+        let (cmd, rsp_recv) = OMSCmd::cancel_order_cmd_without_id(cancel_order_req.clone());
         let start_time = std::time::Instant::now();
         let _ =
             self.submit_sender.send(cmd).await.map_err(|e| {
@@ -306,7 +309,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         Ok(tonic::Response::new(oms::CancelOrderRsp {}))
     }
 
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     async fn get_order_detail(
         &self,
         req: tonic::Request<oms::GetOrderDetailReq>,
@@ -333,7 +336,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         }
     }
 
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     async fn get_balance(
         &self,
         req: tonic::Request<oms::GetBalanceReq>,
@@ -341,7 +344,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         let request = req.get_ref();
         let account_id = request.account_id;
         let view = self.oms_view.read().await;
-
+        let p = precision::PrecisionContext::new(2);
         let balance = view.get_ledger().get_balance(account_id);
         Ok(tonic::Response::new(oms::GetBalanceRsp {
             account_id,
@@ -350,9 +353,9 @@ impl oms::oms_service_server::OmsService for TradeSystem {
                 .map(
                     |(currency, deposit, frozen, update_time)| oms::BalanceItem {
                         currency,
-                        balance: (deposit + frozen).to_string(),
-                        available: deposit.to_string(),
-                        frozen: frozen.to_string(),
+                        balance: p.truncate(deposit + frozen).to_string(),
+                        available: p.truncate(deposit).to_string(),
+                        frozen: p.truncate(frozen).to_string(),
                         update_time,
                     },
                 )
@@ -360,7 +363,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         }))
     }
 
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     async fn transfer_freeze(
         &self,
         _req: tonic::Request<oms::TransferFreezeReq>,
@@ -368,7 +371,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         todo!()
     }
 
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     async fn transfer(
         &self,
         _req: tonic::Request<oms::TransferReq>,
@@ -376,7 +379,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         todo!()
     }
 
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     async fn take_snapshot(
         &self,
         _: tonic::Request<oms::TakeSnapshotReq>,
@@ -400,7 +403,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         Ok(tonic::Response::new(oms::TakeSnapshotRsp {}))
     }
 
-    #[instrument(level = "info", skip_all)]
+    #[instrument(level = "info", skip(self))]
     async fn update_trade_pair_config(
         &self,
         _req: tonic::Request<oms::UpdateTradePairConfigReq>,
@@ -557,6 +560,7 @@ impl ApplyThread {
     }
 
     // todo: order events
+    #[instrument(level = "info", skip(oms, mr))]
     async fn handle_match_result(oms: &mut OMS, mr: &oms::MatchResult) -> Result<(), OMSErr> {
         let action = oms::BizAction::from_i32(mr.action).ok_or_else(|| {
             OMSErr::new(
@@ -564,10 +568,17 @@ impl ApplyThread {
                 "invalid biz_action in match result",
             )
         })?;
+        debug!(
+            "Processing match result: trade_id={}, prev_trade_id={}, action={:?}, payload={}",
+            mr.trade_id,
+            mr.prev_trade_id,
+            action,
+            serde_json::to_string(mr).unwrap()
+        );
         match action {
             oms::BizAction::FillOrder => {
                 for record in &mr.records {
-                    match oms.handle_success_fill(record) {
+                    match oms.handle_success_fill(mr.trade_id, mr.prev_trade_id, record) {
                         Ok(_change_res) => {
                             // note: 一般是没有的
                         }
@@ -586,7 +597,7 @@ impl ApplyThread {
             }
             oms::BizAction::CancelOrder => {
                 if let Some(result) = mr.cancel_result.as_ref() {
-                    oms.handle_success_cancel(result)?;
+                    oms.handle_success_cancel(mr.trade_id, mr.prev_trade_id, result)?;
                 } else {
                     return Err(OMSErr::new(
                         err_code::ERR_OMS_INVALID_MATCH_RESULT,

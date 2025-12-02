@@ -7,7 +7,7 @@ use rust_decimal::Decimal;
 use tte_core::{
     err_code::{self, ERR_INPOSSIBLE_STATE, TradeEngineErr},
     pbcode::oms::BizAction,
-    types::{CancelOrderResult, Direction, FillRecord, Order, SeqID, Symbol},
+    types::{CancelOrderResult, Direction, FillRecord, Order, Symbol},
 };
 
 pub trait SpotLedgerRPCHandler {
@@ -208,7 +208,7 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
 pub struct SpotLedger {
     spots: BTreeMap<u64, BTreeMap<Symbol, Spot>>, // account_id -> currency -> Spot
     order_frozen_receipts: BTreeMap<String, FrozenReceipt>, // frozen_id -> FrozenReceipt
-    last_seq_id: SeqID,
+    last_seq_id: u64,
     last_spot_id: u64, // 目前是sequencer commit后串行调用， 因此一个spot_id足够
 }
 

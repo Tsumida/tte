@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::pbcode::oms as pb;
-use getset::Getters;
+use getset::{Getters, Setters};
 use prost::Message;
 use rust_decimal::Decimal;
 
@@ -28,7 +28,6 @@ impl ToString for TradePair {
 
 pub type OrderID = String;
 pub type ClientOrderID = String;
-pub type SeqID = u64;
 pub type MatchID = u64;
 pub type Symbol = String; // USD, BTC, ETH
 pub type Direction = pb::Direction;
@@ -63,9 +62,9 @@ pub struct Order {
     #[getset(get = "pub")]
     pub client_order_id: ClientOrderID,
     #[getset(get = "pub")]
-    pub trade_id: SeqID,
+    pub trade_id: u64,
     #[getset(get = "pub")]
-    pub prev_trade_id: SeqID,
+    pub prev_trade_id: u64,
     #[getset(get = "pub")]
     pub time_in_force: TimeInForce,
     #[getset(get = "pub")]
@@ -114,19 +113,18 @@ impl Order {
             trade_id: om_order.trade_id,
             prev_trade_id: om_order.prev_trade_id,
             time_in_force: pb::TimeInForce::from_i32(om_order.time_in_force)
-                .unwrap_or(pb::TimeInForce::Gtk),
-            order_type: pb::OrderType::from_i32(om_order.order_type)
-                .unwrap_or(pb::OrderType::Limit),
-            direction: pb::Direction::from_i32(om_order.direction).unwrap_or(pb::Direction::Buy),
+                .ok_or("invalid time_in_force")?,
+            order_type: pb::OrderType::from_i32(om_order.order_type).ok_or("invalid order_type")?,
+            direction: pb::Direction::from_i32(om_order.direction).ok_or("invalid direction")?,
             price,
             target_qty: quantity,
             post_only: om_order.post_only,
-            trade_pair: om_order.trade_pair.unwrap(),
+            trade_pair: om_order.trade_pair.ok_or("missing trade pair")?.into(),
         })
     }
 }
 
-#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Getters, Setters, serde::Serialize, serde::Deserialize)]
 pub struct OrderDetail {
     #[getset(get = "pub")]
     original: Order,
@@ -135,7 +133,7 @@ pub struct OrderDetail {
     #[getset(get = "pub", set = "pub")]
     filled_qty: Decimal,
     #[getset(get = "pub", set = "pub")]
-    last_trade_id: SeqID,
+    last_trade_id: u64,
     #[getset(get = "pub", set = "pub")]
     update_time: u64,
 }
@@ -152,7 +150,6 @@ impl OrderDetail {
     }
 }
 
-// from arena ?
 impl Into<pb::OrderDetail> for &OrderDetail {
     fn into(self) -> pb::OrderDetail {
         pb::OrderDetail {

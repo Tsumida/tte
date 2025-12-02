@@ -13,18 +13,18 @@ use tte_core::err_code;
 use tte_core::pbcode::oms::{self, BizAction};
 use tte_core::types::{
     CancelOrderResult, Direction, FillOrderResult, FillRecord, MatchResult, Order, OrderID,
-    OrderState, OrderType, SeqID, TimeInForce, TradePair,
+    OrderState, OrderType, TimeInForce, TradePair,
 };
 
 // 订单簿键
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct OrderBookKey {
     price: Decimal,
-    seq_id: SeqID,
+    seq_id: u64,
 }
 
 impl OrderBookKey {
-    fn new(price: Decimal, seq_id: SeqID) -> Self {
+    fn new(price: Decimal, seq_id: u64) -> Self {
         return Self { price, seq_id };
     }
 }
