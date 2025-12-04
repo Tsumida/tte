@@ -289,7 +289,7 @@ impl ApplyThread {
         info!("ApplyThread stopped");
     }
 
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     pub async fn handle_match_req(&mut self, batch_match_req: oms::BatchMatchRequest) {
         let mut match_result_buffer = Vec::with_capacity(batch_match_req.cmds.len());
         for cmd in batch_match_req.cmds {
@@ -297,7 +297,14 @@ impl ApplyThread {
             let prev_trade_id = cmd.prev_trade_id;
             let action =
                 oms::BizAction::from_i32(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
-            match self.orderbook.process_trade_cmd(cmd) {
+            let result = self.orderbook.process_trade_cmd(cmd);
+            debug!(
+                "match result for(trade_id={}, prev_trade_id={}): {:?}",
+                trade_id,
+                prev_trade_id,
+                serde_json::to_string(&result).unwrap()
+            );
+            match result {
                 Ok(r) => match r.action {
                     oms::BizAction::FillOrder => {
                         let fill_result = r.fill_result.as_ref().unwrap();
@@ -375,7 +382,7 @@ impl MatchResultProducer {
         info!("{} stopped", &thread_name);
     }
 
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     async fn send(&self, batch_match_result: oms::BatchMatchResult) {
         let key = format!("match_result_{}", self.producer_cfg.trade_pair.pair());
         let buf = &BatchMatchResultTransfer::serialize(&batch_match_result)

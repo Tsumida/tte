@@ -14,3 +14,8 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 getset.workspace = true
+
+[build-dependencies]
+# 构建依赖，由 build.rs 使用
+prost-build = "0.12"
+tonic-build = "0.9"

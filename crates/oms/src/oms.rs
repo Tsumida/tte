@@ -45,11 +45,12 @@ struct SymbolMarketData {
 #[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
 pub struct OMS {
     active_orders: BTreeMap<u64, AccountOrderList>, // account_id -> bid \ ask orders
+    // todo: 历史订单持久化存储
+    final_orders: BTreeMap<u64, Vec<OrderDetail>>, // account_id -> []orders
     #[getset(get = "pub")]
     ledger: SpotLedger,
-    // todo: 考虑基于定时器的缓存, 防止重复使用同一个client_order_id
+    // todo: 考虑基于定时器的缓存, 防止重复使用同一个client_order_id导致数据关联错误
     client_order_map: HashMap<String, OrderID>, // client_order_id -> order_id
-    filled_orders: BTreeMap<u64, Vec<OrderDetail>>, // account_id -> []orders
     market_data: HashMap<String, SymbolMarketData>, // trade_pair.pair() -> market data
     market_currencies: HashSet<String>,
     pub id_manager: IDManager,
@@ -62,7 +63,7 @@ pub struct OMSSnapshot {
     #[getset(get = "pub")]
     active_orders: BTreeMap<u64, AccountOrderList>, // account_id -> bid
     #[getset(get = "pub")]
-    filled_orders: BTreeMap<u64, Vec<OrderDetail>>, // account_id -> []orders
+    final_orders: BTreeMap<u64, Vec<OrderDetail>>, // account_id -> []orders
     #[getset(get = "pub")]
     ledger: SpotLedger,
     #[getset(get = "pub")]
@@ -153,7 +154,7 @@ impl OMS {
     pub fn new() -> Self {
         OMS {
             active_orders: BTreeMap::new(),
-            filled_orders: BTreeMap::new(),
+            final_orders: BTreeMap::new(),
             ledger: SpotLedger::new(),
             client_order_map: HashMap::new(),
             // last_seq_id: 0,
@@ -251,7 +252,7 @@ impl OMS {
         OMSSnapshot {
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
             active_orders: self.active_orders.clone(),
-            filled_orders: self.filled_orders.clone(),
+            final_orders: self.final_orders.clone(),
             ledger: self.ledger.clone(),
             client_order_map: self.client_order_map.clone(),
             market_data: self.market_data.clone(),
@@ -345,45 +346,18 @@ impl OMS {
         Ok(())
     }
 
-    fn remove_active_order(
-        &mut self,
-        direction: Direction,
-        account_id: u64,
-        order_id: &str,
-    ) -> Result<(), OMSErr> {
-        // self.check_client_order_id(client_order_id)?;
-        if let Some(orders) = self.active_orders.get_mut(&account_id) {
-            let order_map = match direction {
-                Direction::Buy => &mut orders.bid_orders,
-                Direction::Sell => &mut orders.ask_orders,
-                _ => unreachable!(),
-            };
-            match order_map.remove(order_id) {
-                Some(filled_order) => {
-                    let client_order_id = filled_order.original().client_order_id();
-                    self.client_order_map.remove(client_order_id);
-                    self.filled_orders
-                        .entry(account_id)
-                        .or_insert(Vec::with_capacity(4))
-                        .push(filled_order);
-                    return Ok(());
-                }
-                None => {
-                    return Err(OMSErr::new(
-                        err_code::ERR_OMS_ORDER_NOT_FOUND,
-                        "Order not found",
-                    ));
-                }
-            }
-        }
-        Err(OMSErr::new(
-            err_code::ERR_OMS_ORDER_NOT_FOUND,
-            "Order not found",
-        ))
+    // 订单不再活跃，移入终态订单列表
+    fn inactivate_order(&mut self, account_id: u64, filled_order: OrderDetail) {
+        let client_order_id = filled_order.original().client_order_id();
+        self.client_order_map.remove(client_order_id);
+        self.final_orders
+            .entry(account_id)
+            .or_insert(Vec::with_capacity(4))
+            .push(filled_order);
     }
 
-    // 更新已成交数量
-    fn update_order_detail(
+    // 更新订单状态、已成交数量。如果订单完全成交，从活跃订单删除。
+    fn fill_order(
         &mut self,
         direction: Direction,
         account_id: u64,
@@ -392,6 +366,7 @@ impl OMS {
         state: OrderState,
         trade_id: u64,
         update_time: u64,
+        is_full_fill: bool,
     ) -> Result<(), OMSErr> {
         if let Some(orders) = self.active_orders.get_mut(&account_id) {
             let order_map = match direction {
@@ -406,6 +381,21 @@ impl OMS {
                 order_detail.set_last_trade_id(max(*order_detail.last_trade_id(), trade_id));
                 return Ok(());
             }
+
+            if is_full_fill {
+                match order_map.remove(order_id) {
+                    Some(filled_order) => {
+                        self.inactivate_order(account_id, filled_order);
+                        return Ok(());
+                    }
+                    None => {
+                        return Err(OMSErr::new(
+                            err_code::ERR_OMS_ORDER_NOT_FOUND,
+                            "Order not found",
+                        ));
+                    }
+                }
+            }
         }
         Err(OMSErr::new(
             err_code::ERR_OMS_ORDER_NOT_FOUND,
@@ -413,6 +403,7 @@ impl OMS {
         ))
     }
 
+    // 更新订单成交量、状态等数据。如果完全成交，从活跃订单删除。
     fn fill_active_order(
         &mut self,
         direction: Direction,
@@ -431,7 +422,7 @@ impl OMS {
         let taker_state = OrderState::from_i32(record.taker_state).unwrap();
         let maker_state = OrderState::from_i32(record.maker_state).unwrap();
 
-        self.update_order_detail(
+        self.fill_order(
             direction,
             record.taker_account_id,
             &record.taker_order_id,
@@ -439,9 +430,10 @@ impl OMS {
             taker_state,
             trade_id,
             chrono::Utc::now().timestamp_millis() as u64,
+            record.is_taker_fulfilled,
         )?;
 
-        self.update_order_detail(
+        self.fill_order(
             reverse_direction(&direction),
             record.maker_account_id,
             &record.maker_order_id,
@@ -449,20 +441,41 @@ impl OMS {
             maker_state,
             trade_id,
             chrono::Utc::now().timestamp_millis() as u64,
+            record.is_maker_fulfilled,
         )?;
-
-        // 删除已完成的订单
-        if record.is_taker_fulfilled {
-            self.remove_active_order(direction, record.taker_account_id, &record.taker_order_id)?;
-        }
-        if record.is_maker_fulfilled {
-            self.remove_active_order(
-                reverse_direction(&direction),
-                record.maker_account_id,
-                &record.maker_order_id,
-            )?;
-        }
         Ok(())
+    }
+
+    fn cancel_active_order(
+        &mut self,
+        direction: Direction,
+        account_id: u64,
+        order_id: &str,
+    ) -> Result<(), OMSErr> {
+        if let Some(orders) = self.active_orders.get_mut(&account_id) {
+            let order_map = match direction {
+                Direction::Buy => &mut orders.bid_orders,
+                Direction::Sell => &mut orders.ask_orders,
+                _ => unreachable!(),
+            };
+            match order_map.remove(order_id) {
+                Some(mut canceled_order) => {
+                    canceled_order.set_current_state(oms::OrderState::Cancelled);
+                    self.inactivate_order(account_id, canceled_order);
+                    return Ok(());
+                }
+                None => {
+                    return Err(OMSErr::new(
+                        err_code::ERR_OMS_ORDER_NOT_FOUND,
+                        "Order not found",
+                    ));
+                }
+            }
+        }
+        Err(OMSErr::new(
+            err_code::ERR_OMS_ORDER_NOT_FOUND,
+            "Order not found",
+        ))
     }
 }
 
@@ -621,7 +634,7 @@ impl OMSMatchResultHandler for OMS {
         let record = CancelOrderResult::from(result); // todo: error handling
         if result.order_state == OrderState::Cancelled as i32 {
             // 更新订单状态
-            self.remove_active_order(record.direction, record.account_id, &record.order_id)?;
+            self.cancel_active_order(record.direction, record.account_id, &record.order_id)?;
 
             // 更新账本状态
             self.ledger.cancel_order(&record).map_err(|e| {

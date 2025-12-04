@@ -18,6 +18,18 @@ impl TradePair {
     pub fn pair(&self) -> String {
         format!("{}{}", self.base, self.quote)
     }
+
+    // BTC_USDT
+    pub fn from_str(s: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let parts: Vec<&str> = s.split('_').collect(); // BASE_QUOTE
+        if parts.len() != 2 {
+            return Err("Invalid TradePair format".into());
+        }
+        Ok(TradePair {
+            base: parts[0].to_string(),
+            quote: parts[1].to_string(),
+        })
+    }
 }
 
 impl ToString for TradePair {
@@ -163,7 +175,7 @@ impl Into<pb::OrderDetail> for &OrderDetail {
 }
 
 // 撮合结果结构体
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FillRecord {
     // pub seq_id: SeqID,
     // pub prev_seq_id: SeqID,
@@ -204,7 +216,7 @@ impl FillRecord {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MatchResult {
     pub action: pb::BizAction,
     pub fill_result: Option<FillOrderResult>, // Some(_) if action == FillOrder
@@ -294,7 +306,7 @@ impl MatchResult {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FillOrderResult {
     pub original_order: Order,
     pub trade_pair: TradePair,
@@ -303,7 +315,7 @@ pub struct FillOrderResult {
     pub total_filled_qty: Decimal,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CancelOrderResult {
     pub is_cancel_success: bool,
     pub err_msg: Option<String>,

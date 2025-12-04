@@ -203,7 +203,7 @@ impl TradeSystem {
 // Impl RPC Handler
 #[tonic::async_trait]
 impl oms::oms_service_server::OmsService for TradeSystem {
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     async fn place_order(
         &self,
         req: tonic::Request<oms::PlaceOrderReq>,
@@ -252,34 +252,41 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         Ok(tonic::Response::new(oms::PlaceOrderRsp {}))
     }
 
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     async fn cancel_order(
         &self,
-        req: tonic::Request<oms::CancelOrderReq>,
+        mut req: tonic::Request<oms::CancelOrderReq>,
     ) -> Result<tonic::Response<oms::CancelOrderRsp>, tonic::Status> {
-        let cancel_order_req = req.get_ref();
-        if cancel_order_req.order_id.is_empty() {
-            return Err(tonic::Status::invalid_argument("Order ID is missing"));
+        let cancel_req = req.get_mut();
+        if cancel_req.order_id.is_empty() && cancel_req.client_order_id.is_empty() {
+            return Err(tonic::Status::invalid_argument(
+                "both order_id and client_order_id are missing",
+            ));
         }
-
         let oms = self.oms_view.read().await;
-        let order = oms
-            .get_order_detail(cancel_order_req.account_id, &cancel_order_req.order_id)
-            .ok_or_else(|| tonic::Status::not_found("Order not found"))?;
+        let order_detail = oms
+            .get_order_detail(cancel_req.account_id, &cancel_req.order_id)
+            .or_else(|| {
+                oms.get_order_detail_by_client_id(
+                    cancel_req.account_id,
+                    &cancel_req.client_order_id,
+                )
+            })
+            .ok_or_else(|| tonic::Status::not_found("order not found"))?;
 
-        match order.current_state() {
-            // ideompotent
+        let original = order_detail.original();
+
+        match order_detail.current_state() {
             types::OrderState::Cancelled => {
                 return Ok(tonic::Response::new(oms::CancelOrderRsp {}));
             }
             types::OrderState::PartiallyFilled
             | types::OrderState::New
             | types::OrderState::PendingNew => {
-                // 可以撤单，但最终结果还是要看撮合结果
                 tracing::info!(
                     "allow cancel order {}, current state={:?}",
-                    cancel_order_req.order_id,
-                    order.current_state(),
+                    original.order_id(),
+                    order_detail.current_state(),
                 );
             }
             _ => {
@@ -288,9 +295,16 @@ impl oms::oms_service_server::OmsService for TradeSystem {
                 ));
             }
         }
+
+        // 除了ID以外, 其他字段和原始订单保持一致
+        cancel_req.order_id = original.order_id().clone();
+        cancel_req.client_order_id = original.client_order_id().clone();
+        cancel_req.direction = *original.direction() as i32;
+        cancel_req.base = original.trade_pair().base.clone();
+        cancel_req.quote = original.trade_pair().quote.clone();
         drop(oms); // critical: avoid deadlock
 
-        let (cmd, rsp_recv) = OMSCmd::cancel_order_cmd_without_id(cancel_order_req.clone());
+        let (cmd, rsp_recv) = OMSCmd::cancel_order_cmd_without_id(cancel_req.clone());
         let start_time = std::time::Instant::now();
         let _ =
             self.submit_sender.send(cmd).await.map_err(|e| {
@@ -309,7 +323,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         Ok(tonic::Response::new(oms::CancelOrderRsp {}))
     }
 
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     async fn get_order_detail(
         &self,
         req: tonic::Request<oms::GetOrderDetailReq>,
@@ -336,7 +350,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         }
     }
 
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     async fn get_balance(
         &self,
         req: tonic::Request<oms::GetBalanceReq>,
@@ -363,7 +377,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         }))
     }
 
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     async fn transfer_freeze(
         &self,
         _req: tonic::Request<oms::TransferFreezeReq>,
@@ -371,7 +385,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         todo!()
     }
 
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     async fn transfer(
         &self,
         _req: tonic::Request<oms::TransferReq>,
@@ -379,7 +393,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         todo!()
     }
 
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     async fn take_snapshot(
         &self,
         _: tonic::Request<oms::TakeSnapshotReq>,
@@ -403,7 +417,7 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         Ok(tonic::Response::new(oms::TakeSnapshotRsp {}))
     }
 
-    #[instrument(level = "info", skip(self))]
+    #[instrument(level = "info", skip_all)]
     async fn update_trade_pair_config(
         &self,
         _req: tonic::Request<oms::UpdateTradePairConfigReq>,
@@ -508,6 +522,13 @@ impl ApplyThread {
                     CmdFlow::MatchResult(batch_match_result) => {
                         let mut oms = self.oms.write().await;
                         for mr in batch_match_result.results.into_iter() {
+                            debug!(
+                                "Processing match result: trade_id={}, prev_trade_id={}, action={:?}, payload={}",
+                                mr.trade_id,
+                                mr.prev_trade_id,
+                                mr.action,
+                                serde_json::to_string(&mr).unwrap()
+                            );
                             if !mr.is_success {
                                 error!(
                                     "OMS match_result(trade_id={}, prev={}) failed in ME",
@@ -568,13 +589,6 @@ impl ApplyThread {
                 "invalid biz_action in match result",
             )
         })?;
-        debug!(
-            "Processing match result: trade_id={}, prev_trade_id={}, action={:?}, payload={}",
-            mr.trade_id,
-            mr.prev_trade_id,
-            action,
-            serde_json::to_string(mr).unwrap()
-        );
         match action {
             oms::BizAction::FillOrder => {
                 for record in &mr.records {
