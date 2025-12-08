@@ -38,6 +38,28 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
                 message_timeout_ms: 5000,
             },
         )
+        .with_kafka_producer(
+            "order_events",
+            ProducerConfig {
+                // todo: 考虑去掉
+                trade_pair: TradePair::new("BTC", "USDT"),
+                bootstrap_servers: "kafka-dev:9092".to_string(),
+                topic: "order_events".to_string(),
+                acks: -1, // "all"
+                message_timeout_ms: 5000,
+            },
+        )
+        .with_kafka_producer(
+            "ledger_events",
+            ProducerConfig {
+                // todo: 考虑去掉
+                trade_pair: TradePair::new("BTC", "USDT"),
+                bootstrap_servers: "kafka-dev:9092".to_string(),
+                topic: "ledger_events".to_string(),
+                acks: -1, // "all"
+                message_timeout_ms: 5000,
+            },
+        )
         .with_kafka_consumer(
             "match_result_BTCUSDT",
             ConsumerConfig {
@@ -84,13 +106,29 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
         config
             .kafka_producers()
             .iter()
+            .filter(|(_, v)| v.topic().starts_with("match_req_"))
             .map(|(_, v)| (v.trade_pair().clone(), v.clone()))
             .collect(),
         config
             .kafka_consumers()
             .iter()
+            .filter(|(_, v)| v.topics()[0].starts_with("match_result_"))
             .map(|(_, v)| (v.trade_pair().clone(), v.clone()))
             .collect(),
+        config
+            .kafka_producers()
+            .iter()
+            .find(|(k, _)| *k == "ledger_events")
+            .unwrap()
+            .1
+            .clone(),
+        config
+            .kafka_producers()
+            .iter()
+            .find(|(k, _)| *k == "order_events")
+            .unwrap()
+            .1
+            .clone(),
     )
     .await?;
     // rpc handler

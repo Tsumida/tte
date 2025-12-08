@@ -249,18 +249,6 @@ pub struct TradePairConfig {
     #[prost(string, tag = "5")]
     pub volatility_limit: ::prost::alloc::string::String,
 }
-/// ======================================= 行情类
-#[derive(serde::Serialize, serde::Deserialize)]
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct LevelSnapshot {
-    #[prost(string, tag = "1")]
-    pub trade_pair: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "2")]
-    pub bids: ::prost::alloc::vec::Vec<Order>,
-    #[prost(message, repeated, tag = "3")]
-    pub asks: ::prost::alloc::vec::Vec<Order>,
-}
 /// ======================================== 指令类
 #[derive(serde::Serialize, serde::Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -274,6 +262,90 @@ pub struct ReplaceOrderCmd {
     pub new_quantity: ::prost::alloc::string::String,
     #[prost(uint64, tag = "4")]
     pub account_id: u64,
+}
+/// ======================================== 非撮合类事件推送
+#[derive(serde::Serialize, serde::Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LevelSnapshot {
+    #[prost(string, tag = "1")]
+    pub trade_pair: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub bids: ::prost::alloc::vec::Vec<Order>,
+    #[prost(message, repeated, tag = "3")]
+    pub asks: ::prost::alloc::vec::Vec<Order>,
+}
+/// 订单最新详情
+#[derive(serde::Serialize, serde::Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OrderEvent {
+    #[prost(string, tag = "1")]
+    pub base: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub quote: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub account_id: u64,
+    #[prost(string, tag = "4")]
+    pub order_id: ::prost::alloc::string::String,
+    /// 对应Direction枚举
+    #[prost(int32, tag = "5")]
+    pub direction: i32,
+    #[prost(string, tag = "6")]
+    pub target_qty: ::prost::alloc::string::String,
+    #[prost(string, tag = "7")]
+    pub filled_qty: ::prost::alloc::string::String,
+    #[prost(string, tag = "8")]
+    pub price: ::prost::alloc::string::String,
+    /// 对应OrderState枚举
+    #[prost(int32, tag = "9")]
+    pub order_state: i32,
+    #[prost(string, tag = "10")]
+    pub client_order_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "11")]
+    pub trade_id: u64,
+    #[prost(uint64, tag = "12")]
+    pub prev_trade_id: u64,
+    /// 下单、最新成交时间戳, 单位us, 用于过滤旧数据
+    #[prost(uint64, tag = "13")]
+    pub tx_time: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BatchOrderEvent {
+    #[prost(message, repeated, tag = "1")]
+    pub events: ::prost::alloc::vec::Vec<OrderEvent>,
+}
+/// 账户余额变更事件
+#[derive(serde::Serialize, serde::Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BalanceEvent {
+    #[prost(uint64, tag = "1")]
+    pub account_id: u64,
+    /// 币种
+    #[prost(string, tag = "2")]
+    pub currency: ::prost::alloc::string::String,
+    /// 可用余额
+    #[prost(string, tag = "3")]
+    pub deposit: ::prost::alloc::string::String,
+    /// 冻结余额
+    #[prost(string, tag = "4")]
+    pub frozen: ::prost::alloc::string::String,
+    /// 总余额, 等于available + frozen
+    #[prost(string, tag = "5")]
+    pub balance: ::prost::alloc::string::String,
+    /// 最后更新时间，us
+    #[prost(uint64, tag = "6")]
+    pub update_time: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BatchBalanceEvent {
+    #[prost(message, repeated, tag = "1")]
+    pub events: ::prost::alloc::vec::Vec<BalanceEvent>,
 }
 /// ======================================== RPC类
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -371,7 +443,7 @@ pub struct TransferReq {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TransferRsp {}
-/// ======================================== 账户类
+/// ======================================== 账户类请求
 #[derive(serde::Serialize, serde::Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -388,7 +460,7 @@ pub struct GetBalanceRsp {
     #[prost(message, repeated, tag = "2")]
     pub balances: ::prost::alloc::vec::Vec<BalanceItem>,
 }
-/// ======================================== 管理类
+/// ======================================== 管理类请求
 #[derive(serde::Serialize, serde::Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

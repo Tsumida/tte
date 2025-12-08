@@ -7,7 +7,7 @@
 use getset::Getters;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::error::OMSErr;
 use std::cmp::max;
@@ -143,11 +143,23 @@ pub struct OMSChangeResult {
     // 对账本的状态更新
     pub spot_change_result: Vec<Result<spot::SpotChangeResult, OMSErr>>,
 
-    // pub order_event: Vec<OrderEvent>,
+    #[getset(get = "pub")]
+    pub order_event: Vec<oms::OrderEvent>,
+
     #[getset(get = "pub")]
     // 需要转发给撮合器的请求
     // note：ReplaceOrder会依次生成Cancel\Place请求
     pub match_request: Option<oms::BatchMatchRequest>,
+}
+
+impl OMSChangeResult {
+    pub fn empty() -> Self {
+        OMSChangeResult {
+            spot_change_result: vec![],
+            order_event: vec![],
+            match_request: None,
+        }
+    }
 }
 
 impl OMS {
@@ -314,7 +326,7 @@ impl OMS {
     }
 
     // refactor: atomic
-    fn insert_order(&mut self, order: Order) -> Result<(), OMSErr> {
+    fn insert_order(&mut self, order: Order) -> Result<Vec<oms::OrderEvent>, OMSErr> {
         let account_orders =
             self.active_orders
                 .entry(order.account_id)
@@ -326,6 +338,7 @@ impl OMS {
         let client_order_id = order.client_order_id.clone();
 
         let order_detail = OrderDetail::new(order);
+        let order_event = order_event_from_detail(&order_detail);
         let order_map = match order_detail.original().direction {
             Direction::Buy => &mut account_orders.bid_orders,
             Direction::Sell => &mut account_orders.ask_orders,
@@ -343,7 +356,7 @@ impl OMS {
 
         self.client_order_map.insert(client_order_id, order_id);
 
-        Ok(())
+        Ok(vec![order_event])
     }
 
     // 订单不再活跃，移入终态订单列表
@@ -409,7 +422,7 @@ impl OMS {
         direction: Direction,
         trade_id: u64,
         record: &oms::FillRecord,
-    ) -> Result<(), OMSErr> {
+    ) -> Result<Vec<oms::OrderEvent>, OMSErr> {
         // 更新活跃订单状态
         let qty = Decimal::from_str(&record.quantity).map_err(|_| {
             OMSErr::new(
@@ -443,7 +456,9 @@ impl OMS {
             chrono::Utc::now().timestamp_millis() as u64,
             record.is_maker_fulfilled,
         )?;
-        Ok(())
+        Ok(vec![
+            // todo
+        ])
     }
 
     fn cancel_active_order(
@@ -451,7 +466,7 @@ impl OMS {
         direction: Direction,
         account_id: u64,
         order_id: &str,
-    ) -> Result<(), OMSErr> {
+    ) -> Result<Vec<oms::OrderEvent>, OMSErr> {
         if let Some(orders) = self.active_orders.get_mut(&account_id) {
             let order_map = match direction {
                 Direction::Buy => &mut orders.bid_orders,
@@ -461,8 +476,9 @@ impl OMS {
             match order_map.remove(order_id) {
                 Some(mut canceled_order) => {
                     canceled_order.set_current_state(oms::OrderState::Cancelled);
+                    let order_event = order_event_from_detail(&canceled_order);
                     self.inactivate_order(account_id, canceled_order);
-                    return Ok(());
+                    return Ok(vec![order_event]);
                 }
                 None => {
                     return Err(OMSErr::new(
@@ -532,7 +548,7 @@ impl OMSRpcHandler for OMS {
 
                 // todo: 账本和OMS整体并非原子操作, 需要考虑内存回滚机制
                 // 更新活跃订单状态
-                self.insert_order(order.clone())?;
+                let order_event = self.insert_order(order.clone())?;
                 // 更新账本状态
                 let match_request = Some(oms::BatchMatchRequest {
                     trade_pair: Some(trade_pair.clone()),
@@ -553,6 +569,7 @@ impl OMSRpcHandler for OMS {
                     .map_err(|e| OMSErr::new(e.code(), "SpotLedgerErr"))?; // todo: 优化错误传递
                 Ok(OMSChangeResult {
                     spot_change_result: vec![Ok(spot_change_result)],
+                    order_event,
                     match_request,
                 })
             }
@@ -564,6 +581,7 @@ impl OMSRpcHandler for OMS {
                 // 转发撮合
                 Ok(OMSChangeResult {
                     spot_change_result: vec![],
+                    order_event: vec![],
                     match_request: Some(oms::BatchMatchRequest {
                         trade_pair: Some(trade_pair.clone()),
                         cmds: vec![oms::TradeCmd {
@@ -601,7 +619,7 @@ impl OMSMatchResultHandler for OMS {
         let match_id = mr.match_id;
 
         // 更新order状态
-        let _ = self.fill_active_order(mr.direction, trade_id, record)?;
+        let order_event = self.fill_active_order(mr.direction, trade_id, record)?;
 
         // 更新ledger状态
         let spot_events = self
@@ -618,9 +636,9 @@ impl OMSMatchResultHandler for OMS {
             .map(|e| Ok(e))
             .collect::<Vec<Result<spot::SpotChangeResult, OMSErr>>>();
 
-        // todo!
         Ok(OMSChangeResult {
             spot_change_result: spot_events,
+            order_event,
             match_request: None,
         })
     }
@@ -634,7 +652,8 @@ impl OMSMatchResultHandler for OMS {
         let record = CancelOrderResult::from(result); // todo: error handling
         if result.order_state == OrderState::Cancelled as i32 {
             // 更新订单状态
-            self.cancel_active_order(record.direction, record.account_id, &record.order_id)?;
+            let order_event =
+                self.cancel_active_order(record.direction, record.account_id, &record.order_id)?;
 
             // 更新账本状态
             self.ledger.cancel_order(&record).map_err(|e| {
@@ -647,12 +666,17 @@ impl OMSMatchResultHandler for OMS {
                     "cancel_result processing failed",
                 )
             })?;
+            return Ok(OMSChangeResult {
+                spot_change_result: vec![],
+                order_event,
+                match_request: None,
+            });
         }
-
-        Ok(OMSChangeResult {
-            spot_change_result: vec![],
-            match_request: None,
-        })
+        warn!(
+            "CancelResult with non-cancelled state: account_id={}, order_id={}, state={}",
+            record.account_id, record.order_id, result.order_state
+        );
+        Ok(OMSChangeResult::empty())
     }
 }
 

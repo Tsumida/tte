@@ -2,11 +2,12 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use getset::Getters;
 use rust_decimal::Decimal;
 
 use tte_core::{
     err_code::{self, ERR_INPOSSIBLE_STATE, TradeEngineErr},
-    pbcode::oms::BizAction,
+    pbcode::oms::{BalanceEvent, BizAction},
     types::{CancelOrderResult, Direction, FillRecord, Order, Symbol},
 };
 
@@ -58,8 +59,9 @@ impl Spot {
 }
 
 // 单账户的币种余额变动流水
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Getters)]
 pub struct SpotChangeResult {
+    #[getset(get = "pub")]
     is_action_success: bool,
     action_failed_err: Option<String>,
     spot_id: u64,
@@ -68,6 +70,23 @@ pub struct SpotChangeResult {
     spot_after: Spot,
     // transfer_frozen_receipts_snapshot: Vec<(String, FrozenReceipt)>, // 主要是debug
 }
+
+impl SpotChangeResult {
+    pub fn to_balance_event(&self) -> Option<BalanceEvent> {
+        if !self.is_action_success {
+            return None;
+        }
+        Some(BalanceEvent {
+            account_id: self.spot_after.account_id,
+            currency: self.spot_after.currency.clone(),
+            deposit: self.spot_after.deposit.to_string(),
+            frozen: self.spot_after.frozen.to_string(),
+            balance: (self.spot_after.deposit - self.spot_after.frozen).to_string(),
+            update_time: self.spot_after.update_time,
+        })
+    }
+}
+
 // 记录单次流程中的冻结额度，主要用于整体释放。
 // 场景：限价单撤单时要按orderID释放整个冻结额度
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

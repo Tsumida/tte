@@ -406,6 +406,7 @@ impl OrderBook {
         })
     }
 
+    // critical
     // 按指定数量去撮合订单
     fn match_basic_order_by_qty(
         &mut self,
@@ -420,6 +421,7 @@ impl OrderBook {
         } else {
             (&mut self.ask_orders, &mut self.bid_orders)
         };
+        let mut filled_order_ids = Vec::with_capacity(size_hint);
 
         if let Some((mut maker_key, mut maker)) = adversary_q.peek() {
             // keep fill until:
@@ -443,7 +445,7 @@ impl OrderBook {
                 match_keys.push(maker_key);
                 let prev_match_id = self.id_manager.match_id().clone();
                 let match_id = self.id_manager.advance_match_id();
-                results.push(FillRecord {
+                let fill = FillRecord {
                     match_id: match_id,
                     prev_match_id: prev_match_id,
                     price: maker.order.price,
@@ -466,7 +468,16 @@ impl OrderBook {
                     },
                     maker_account_id: maker.order.account_id,
                     trade_pair: taker.order.trade_pair.clone(),
-                });
+                };
+
+                if fill.is_maker_fulfilled {
+                    filled_order_ids.push(maker.order.order_id.clone());
+                }
+                if fill.is_taker_fulfilled {
+                    filled_order_ids.push(taker.order.order_id.clone());
+                }
+
+                results.push(fill);
                 total_filled_qty += filled_qty;
                 if let Some((k, v)) = adversary_q.next(&maker_key) {
                     maker_key = k;
@@ -551,6 +562,11 @@ impl OrderBook {
             }
         }
 
+        // 清空已成交订单
+        for order_id in filled_order_ids {
+            self.order_id_mapper.remove(&order_id);
+        }
+
         Ok(MatchResult {
             action: BizAction::FillOrder,
             fill_result: Some(FillOrderResult {
@@ -572,6 +588,14 @@ impl OrderBookRequestHandler for OrderBook {
         if order.post_only {
             return self.post_order(order);
         }
+
+        // 前置处理
+        // todo: 结合最小步进，超过的部分进行舍弃.
+        // case:
+        //      0.500000, min_step=0.000001,
+        //      user: buy x / rate = 0.500000123456, quantize to 0.500000
+        //
+        // order.target_qty = quantize_qty(order.target_qty, config.min_step);
 
         match (order.order_type, order.time_in_force) {
             (OrderType::Limit, TimeInForce::Gtk)
@@ -758,11 +782,14 @@ mod test {
         let prev_trade_id = ob.id_manager.trade_id;
         let trade_id = prev_trade_id + 1;
 
+        let client_order_id = format!("CLI_{}_{}", account_id, trade_id);
+        let order_id = format!("ORD_{}_{}", account_id, trade_id);
+
         let order = Order {
-            client_order_id: String::new(),
+            client_order_id,
             post_only: true, // essential
             account_id: account_id,
-            order_id: OrderID::new(),
+            order_id,
             trade_id: trade_id,
             prev_trade_id: prev_trade_id,
             direction: direction,
@@ -785,10 +812,14 @@ mod test {
         price: f64,
         qty: f64,
     ) -> Result<MatchResult, OrderBookErr> {
+        let prev_trade_id = ob.id_manager.trade_id;
+        let trade_id = prev_trade_id + 1;
+        let client_order_id = format!("CLI_{}_{}", account_id, trade_id);
+        let order_id = format!("ORD_{}_{}", account_id, trade_id);
         let order = Order {
-            client_order_id: String::new(),
+            client_order_id,
             post_only: false,
-            order_id: OrderID::new(),
+            order_id,
             account_id: account_id,
             trade_id: ob.id_manager.trade_id + 1,
             prev_trade_id: ob.id_manager.trade_id,
@@ -878,6 +909,13 @@ mod test {
         assert_eq!(peek.qty_info.remain_qty, Decimal::from_f64(5.0).unwrap());
 
         assert_eq!(result.order_state, OrderState::Filled);
+
+        // 成交后order_id_mapper中无该订单
+        assert!(
+            ob.order_id_mapper
+                .get(&result.original_order.order_id)
+                .is_none()
+        );
     }
 
     #[test]
@@ -919,6 +957,14 @@ mod test {
             Decimal::from_f64(15.0).unwrap(),
         );
         assert_eq!(bid_peek.order_state, OrderState::PartiallyFilled);
+
+        // 未完全成交的订单仍在
+        assert!(
+            ob.order_id_mapper
+                .get(&result.original_order.order_id)
+                .is_some()
+        );
+        assert!(ob.order_id_mapper.get(&bid_peek.order.order_id).is_some());
     }
 
     #[test]

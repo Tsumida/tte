@@ -376,3 +376,21 @@ impl BatchMatchResultTransfer {
         pb::BatchMatchResult::decode(data)
     }
 }
+
+pub fn order_event_from_detail(order_detail: &OrderDetail) -> pb::OrderEvent {
+    pb::OrderEvent {
+        account_id: *order_detail.original().account_id(),
+        order_id: order_detail.original().order_id().to_string(),
+        trade_id: order_detail.last_trade_id().clone(),
+        prev_trade_id: order_detail.original().prev_trade_id().clone(),
+        base: order_detail.original().trade_pair.base.clone(),
+        quote: order_detail.original().trade_pair.quote.clone(),
+        direction: order_detail.original().direction as i32,
+        price: order_detail.original().price().to_string(),
+        target_qty: order_detail.original().target_qty().to_string(),
+        filled_qty: order_detail.filled_qty().to_string(),
+        order_state: pb::OrderState::Cancelled as i32,
+        client_order_id: order_detail.original().client_order_id().clone(),
+        tx_time: order_detail.update_time,
+    }
+}

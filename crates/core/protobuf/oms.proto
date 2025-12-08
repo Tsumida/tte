@@ -190,19 +190,54 @@ message TradePairConfig{
     string volatility_limit = 5; // 价格波动限制百分比，例如0.1表示10%
 }
 
-// ======================================= 行情类
-message LevelSnapshot{
-    string trade_pair = 1; 
-    repeated Order bids = 2; 
-    repeated Order asks = 3; 
-}
-
 // ======================================== 指令类
 message ReplaceOrderCmd{
     string order_id = 1; 
     string new_price = 2;
     string new_quantity = 3;
     uint64 account_id = 4;
+}
+
+// ======================================== 非撮合类事件推送
+message LevelSnapshot{
+    string trade_pair = 1; 
+    repeated Order bids = 2; 
+    repeated Order asks = 3; 
+}
+
+// 订单最新详情
+message OrderEvent{
+    string base = 1;
+    string quote = 2;
+    uint64 account_id = 3;
+    string order_id = 4;
+    int32 direction = 5; // 对应Direction枚举
+    string target_qty = 6;
+    string filled_qty = 7;
+    string price = 8;
+    int32 order_state = 9; // 对应OrderState枚举
+    string client_order_id = 10;
+    uint64 trade_id = 11;
+    uint64 prev_trade_id = 12;
+    uint64 tx_time = 13; // 下单、最新成交时间戳, 单位us, 用于过滤旧数据
+}
+
+message BatchOrderEvent{
+    repeated OrderEvent events = 1;
+}
+
+// 账户余额变更事件
+message BalanceEvent{
+    uint64 account_id = 1;
+    string currency = 2; // 币种
+    string deposit = 3; // 可用余额
+    string frozen = 4; // 冻结余额
+    string balance = 5; // 总余额, 等于available + frozen
+    uint64 update_time = 6; // 最后更新时间，us
+}
+
+message BatchBalanceEvent{
+    repeated BalanceEvent events = 1;
 }
 
 // Generate PlaceOrder, ReplaceOrder, CancelOrder, TakeSnapshot
@@ -262,7 +297,7 @@ message TransferReq{
 
 message TransferRsp{}
 
-// ======================================== 账户类
+// ======================================== 账户类请求
 message GetBalanceReq{
     uint64 account_id = 1;
 }
@@ -272,7 +307,7 @@ message GetBalanceRsp{
     repeated BalanceItem balances = 2;
 }
 
-// ======================================== 管理类
+// ======================================== 管理类请求
 message UpdateTradePairConfigReq{
     TradePairConfig config = 1;
 }
