@@ -768,9 +768,7 @@ mod test {
     use rust_decimal::Decimal;
     use rust_decimal::prelude::FromPrimitive;
     use rust_decimal_macros::dec;
-    use tte_core::types::{
-        Direction, Order, OrderID, OrderState, OrderType, TimeInForce, TradePair,
-    };
+    use tte_core::types::{Direction, Order, OrderState, OrderType, TimeInForce, TradePair};
 
     fn post_limit_order(
         ob: &mut OrderBook,

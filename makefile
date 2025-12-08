@@ -46,7 +46,7 @@ build-server:
 	@echo "✅ Server 镜像构建完成: $(IMAGE_NAME):$(IMAGE_TAG)"
 
 
-build-dev: build-server
+build-img: build-server
 	@echo "✅ 所有开发镜像构建完成。"
 
 # ==============================================================================
@@ -60,4 +60,4 @@ copy-snapshot:
 	-@docker cp $(ME_CONTAINER):"$(CONTAINER_SS_PATH)/" "$(SS_DIR)/$(TIMESTAMP)/me/" || echo "No ME snapshots found in $(ME_CONTAINER)." 	
 	@echo "==> Done. Files copied to $(SS_DIR)/$(TIMESTAMP)"
 
-.PHONY: test integration-test cov bench build-server build-me build-dev copy-snapshot
+.PHONY: test integration-test cov bench build-server build-me build-img copy-snapshot

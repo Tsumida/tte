@@ -229,7 +229,7 @@ impl OMS {
         Ok(())
     }
 
-    pub fn get_order_detail(&self, account_id: u64, order_id: &str) -> Option<&OrderDetail> {
+    pub fn get_active_order_detail(&self, account_id: u64, order_id: &str) -> Option<&OrderDetail> {
         // check if order exists
         if let Some(account_orders) = self.active_orders.get(&account_id) {
             // bid and then ask
@@ -245,13 +245,13 @@ impl OMS {
         }
     }
 
-    pub fn get_order_detail_by_client_id(
+    pub fn get_active_order_detail_by_client_id(
         &self,
         account_id: u64,
         client_order_id: &str,
     ) -> Option<&OrderDetail> {
         match self.client_order_map.get(client_order_id) {
-            Some(order_id) => self.get_order_detail(account_id, order_id),
+            Some(order_id) => self.get_active_order_detail(account_id, order_id),
             None => None,
         }
     }
@@ -337,7 +337,7 @@ impl OMS {
         let order_id = order.order_id.clone();
         let client_order_id = order.client_order_id.clone();
 
-        let order_detail = OrderDetail::new(order);
+        let order_detail = OrderDetail::place_order(order);
         let order_event = order_event_from_detail(&order_detail);
         let order_map = match order_detail.original().direction {
             Direction::Buy => &mut account_orders.bid_orders,
@@ -375,45 +375,49 @@ impl OMS {
         direction: Direction,
         account_id: u64,
         order_id: &str,
-        filled_qty: Decimal, // 本次新增的已成交数量
+        filled_qty: Decimal,
         state: OrderState,
         trade_id: u64,
         update_time: u64,
         is_full_fill: bool,
-    ) -> Result<(), OMSErr> {
-        if let Some(orders) = self.active_orders.get_mut(&account_id) {
-            let order_map = match direction {
-                Direction::Buy => &mut orders.bid_orders,
-                Direction::Sell => &mut orders.ask_orders,
-                _ => unreachable!(),
-            };
-            if let Some(order_detail) = order_map.get_mut(order_id) {
-                order_detail.set_filled_qty(order_detail.filled_qty() + filled_qty);
-                order_detail.set_current_state(state);
-                order_detail.set_update_time(update_time);
-                order_detail.set_last_trade_id(max(*order_detail.last_trade_id(), trade_id));
-                return Ok(());
-            }
+    ) -> Result<OrderDetail, OMSErr> {
+        let update_order_fields = |order: &mut OrderDetail| {
+            order.set_filled_qty(order.filled_qty() + filled_qty);
+            order.set_current_state(state);
+            order.set_update_time(update_time);
+            order.set_last_trade_id(std::cmp::max(*order.last_trade_id(), trade_id));
+        };
 
-            if is_full_fill {
-                match order_map.remove(order_id) {
-                    Some(filled_order) => {
-                        self.inactivate_order(account_id, filled_order);
-                        return Ok(());
-                    }
-                    None => {
-                        return Err(OMSErr::new(
-                            err_code::ERR_OMS_ORDER_NOT_FOUND,
-                            "Order not found",
-                        ));
-                    }
-                }
+        let orders = self
+            .active_orders
+            .get_mut(&account_id)
+            .ok_or_else(|| OMSErr::new(err_code::ERR_OMS_ORDER_NOT_FOUND, "Account not found"))?;
+
+        let order_map = match direction {
+            Direction::Buy => &mut orders.bid_orders,
+            Direction::Sell => &mut orders.ask_orders,
+            _ => unreachable!(),
+        };
+
+        // 2. 根据是否完全成交，分叉逻辑
+        if is_full_fill {
+            if let Some(mut filled_order) = order_map.remove(order_id) {
+                update_order_fields(&mut filled_order);
+                self.inactivate_order(account_id, filled_order.clone());
+                Ok(filled_order)
+            } else {
+                Err(OMSErr::new(
+                    err_code::ERR_OMS_ORDER_NOT_FOUND,
+                    "Order not found",
+                ))
             }
+        } else {
+            let order_detail = order_map
+                .get_mut(order_id)
+                .ok_or_else(|| OMSErr::new(err_code::ERR_OMS_ORDER_NOT_FOUND, "Order not found"))?;
+            update_order_fields(order_detail);
+            Ok(order_detail.clone())
         }
-        Err(OMSErr::new(
-            err_code::ERR_OMS_ORDER_NOT_FOUND,
-            "Order not found",
-        ))
     }
 
     // 更新订单成交量、状态等数据。如果完全成交，从活跃订单删除。
@@ -435,7 +439,7 @@ impl OMS {
         let taker_state = OrderState::from_i32(record.taker_state).unwrap();
         let maker_state = OrderState::from_i32(record.maker_state).unwrap();
 
-        self.fill_order(
+        let taker_order = self.fill_order(
             direction,
             record.taker_account_id,
             &record.taker_order_id,
@@ -446,7 +450,7 @@ impl OMS {
             record.is_taker_fulfilled,
         )?;
 
-        self.fill_order(
+        let maker_order = self.fill_order(
             reverse_direction(&direction),
             record.maker_account_id,
             &record.maker_order_id,
@@ -456,8 +460,11 @@ impl OMS {
             chrono::Utc::now().timestamp_millis() as u64,
             record.is_maker_fulfilled,
         )?;
+
+        // 收集双方订单最新状态
         Ok(vec![
-            // todo
+            order_event_from_detail(&taker_order),
+            order_event_from_detail(&maker_order),
         ])
     }
 

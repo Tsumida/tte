@@ -151,7 +151,7 @@ pub struct OrderDetail {
 }
 
 impl OrderDetail {
-    pub fn new(order: Order) -> Self {
+    pub fn place_order(order: Order) -> Self {
         OrderDetail {
             original: order,
             current_state: OrderState::New,

@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use std::alloc::System;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -13,7 +12,7 @@ use prost::Message as _;
 use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
 use tokio::sync::{RwLock, mpsc, oneshot};
-use tracing::{debug, error, event, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 use tte_core::pbcode::oms;
 use tte_core::precision;
 use tte_core::types::{BatchMatchResultTransfer, TradePair};
@@ -288,9 +287,9 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         }
         let oms = self.oms_view.read().await;
         let order_detail = oms
-            .get_order_detail(cancel_req.account_id, &cancel_req.order_id)
+            .get_active_order_detail(cancel_req.account_id, &cancel_req.order_id)
             .or_else(|| {
-                oms.get_order_detail_by_client_id(
+                oms.get_active_order_detail_by_client_id(
                     cancel_req.account_id,
                     &cancel_req.client_order_id,
                 )
@@ -358,14 +357,14 @@ impl oms::oms_service_server::OmsService for TradeSystem {
 
         if !order_id.is_empty() {
             let order = view
-                .get_order_detail(account_id, order_id)
+                .get_active_order_detail(account_id, order_id)
                 .ok_or_else(|| tonic::Status::not_found("order not found by order_id"))?;
             Ok(tonic::Response::new(oms::GetOrderDetailRsp {
                 detail: Some(order.into()),
             }))
         } else {
             let a = view
-                .get_order_detail_by_client_id(account_id, &request.client_order_id)
+                .get_active_order_detail_by_client_id(account_id, &request.client_order_id)
                 .ok_or_else(|| tonic::Status::not_found("order not found by client_order_id"))?;
             return Ok(tonic::Response::new(oms::GetOrderDetailRsp {
                 detail: Some(a.into()),
