@@ -298,12 +298,6 @@ impl ApplyThread {
             let action =
                 oms::BizAction::from_i32(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
             let result = self.orderbook.process_trade_cmd(cmd);
-            debug!(
-                "match result for(trade_id={}, prev_trade_id={}): {:?}",
-                trade_id,
-                prev_trade_id,
-                serde_json::to_string(&result).unwrap()
-            );
             match result {
                 Ok(r) => match r.action {
                     oms::BizAction::FillOrder => {
@@ -387,6 +381,12 @@ impl MatchResultProducer {
         let key = format!("match_result_{}", self.producer_cfg.trade_pair.pair());
         let buf = &BatchMatchResultTransfer::serialize(&batch_match_result)
             .expect("serialize match_result");
+
+        debug!(
+            "match result: {}",
+            serde_json::to_string(&batch_match_result).unwrap()
+        );
+
         self.producer
             .send(
                 rdkafka::producer::FutureRecord::to(self.producer_cfg.topic())
