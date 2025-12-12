@@ -397,7 +397,7 @@ pub fn order_event_from_detail(order_detail: &OrderDetail) -> pb::OrderEvent {
         price: original.price().to_string(),
         target_qty: original.target_qty().to_string(),
         filled_qty: order_detail.filled_qty().to_string(),
-        order_state: pb::OrderState::Cancelled as i32,
+        order_state: order_detail.current_state as i32,
         client_order_id: original.client_order_id().clone(),
         tx_time: order_detail.update_time,
         order_type: original.order_type.as_str_name().to_string(),

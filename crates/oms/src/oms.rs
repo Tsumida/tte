@@ -710,16 +710,24 @@ impl OrderBuilder {
             trade_pair: order.trade_pair.clone().ok_or_else(|| {
                 OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field trade_pair")
             })?,
-            direction: Direction::from_i32(order.direction).unwrap(),
+            direction: Direction::from_i32(order.direction)
+                .ok_or_else(|| OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid direction"))?,
             price: Decimal::from_str(&order.price)
                 .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "Invalid price"))?,
             target_qty: Decimal::from_str(&order.quantity)
                 .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "Invalid quantity"))?,
             post_only: order.post_only,
-            order_type: OrderType::from_i32(order.order_type).unwrap(),
+            order_type: OrderType::from_i32(order.order_type)
+                .ok_or_else(|| OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid order type"))?,
             trade_id: trade_id,
             prev_trade_id: prev_trade_id,
-            time_in_force: TimeInForce::from_i32(order.time_in_force).unwrap(),
+            time_in_force: TimeInForce::from_i32(order.time_in_force).ok_or_else(|| {
+                OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid time in force")
+            })?,
+            create_time: order.create_time,
+            stp_strategy: oms::StpStrategy::from_i32(order.stp_strategy).ok_or_else(|| {
+                OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid stp strategy")
+            })?,
         })
     }
 }

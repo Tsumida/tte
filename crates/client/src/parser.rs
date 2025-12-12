@@ -82,7 +82,7 @@ impl FileParser {
                 post_only,
                 trade_id: 0,
                 prev_trade_id: 0,
-                create_time: create_ts_us.to_string(),
+                create_time: create_ts_us,
             }),
         })
     }

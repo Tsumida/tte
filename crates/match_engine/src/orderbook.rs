@@ -227,6 +227,8 @@ pub struct OrderBookSnapshot {
     id_manager: IDManager,
     #[get( = "pub")]
     order_id_mapper: HashMap<OrderID, OrderBookKey>,
+    #[get( = "pub")]
+    last_price: Decimal,
 }
 
 pub(crate) trait OrderBookSnapshotHandler {
@@ -298,6 +300,7 @@ pub struct OrderBook {
     bid_orders: BTreeOrderQueue,
     ask_orders: BTreeOrderQueue,
     trade_pair: TradePair,
+    last_price: Decimal,
 }
 
 // OrderBook需要保证顺序接收OBRequest
@@ -309,6 +312,7 @@ impl OrderBook {
             bid_orders: BTreeOrderQueue::new(Direction::Buy),
             ask_orders: BTreeOrderQueue::new(Direction::Sell),
             trade_pair,
+            last_price: Decimal::ZERO,
         }
     }
 
@@ -406,6 +410,21 @@ impl OrderBook {
         })
     }
 
+    // Require:
+    // 1. Bid => taker_price >= maker_price
+    // 2. Ask => taker_price <= maker_price
+    fn match_price(taker_price: Decimal, maker_price: Decimal, last_price: Decimal) -> Decimal {
+        // 参考: 交易所交易制度和规则深度解读，第95页
+        // 连续竞价下以最后成交价、taker、maker的价格的中位数作为成交价，可以降低成交价的跳变. 这个思想和BTC的出块时间类似
+        if last_price != Decimal::ZERO {
+            let mut prices = [taker_price, maker_price, last_price];
+            prices.sort();
+            prices[1]
+        } else {
+            maker_price
+        }
+    }
+
     // critical
     // 按指定数量去撮合订单
     fn match_basic_order_by_qty(
@@ -445,10 +464,12 @@ impl OrderBook {
                 match_keys.push(maker_key);
                 let prev_match_id = self.id_manager.match_id().clone();
                 let match_id = self.id_manager.advance_match_id();
+                let match_price =
+                    Self::match_price(taker.order.price, maker.order.price, self.last_price);
                 let fill = FillRecord {
                     match_id: match_id,
                     prev_match_id: prev_match_id,
-                    price: maker.order.price,
+                    price: match_price,
                     qty: filled_qty,
                     direction: taker.order.direction,
                     taker_order_id: taker.order.order_id.clone(),
@@ -711,6 +732,7 @@ impl OrderBookSnapshotHandler for OrderBook {
             ask_orders: self.ask_orders.take_queue_snapshot(),
             id_manager: self.id_manager.clone(),
             order_id_mapper: self.order_id_mapper.clone(),
+            last_price: self.last_price,
         })
     }
 
@@ -739,6 +761,7 @@ impl OrderBookSnapshotHandler for OrderBook {
             order_id_mapper: order_id_to_key,
             bid_orders,
             ask_orders,
+            last_price: Decimal::ZERO,
         })
     }
 }
@@ -799,6 +822,8 @@ mod test {
                 base: "BTC".to_string(),
                 quote: "USD".to_string(),
             },
+            stp_strategy: tte_core::pbcode::oms::StpStrategy::CancelTaker,
+            create_time: chrono::Utc::now().timestamp_micros() as u64,
         };
         _ = ob.place_order(order)
     }
@@ -830,6 +855,8 @@ mod test {
                 base: "BTC".to_string(),
                 quote: "USD".to_string(),
             },
+            stp_strategy: tte_core::pbcode::oms::StpStrategy::CancelTaker,
+            create_time: chrono::Utc::now().timestamp_micros() as u64,
         };
         ob.place_order(order)
     }

@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
 use rust_decimal::Decimal;
-
 use tte_core::pbcode::oms::BizAction;
-
+use tte_core::pbcode::oms::StpStrategy;
 use tte_core::types::*; // 假设你上面的结构体定义放在 types.rs
+
+use chrono;
 
 /// 模拟下单
 pub fn new_limit_order(
@@ -30,6 +31,8 @@ pub fn new_limit_order(
             base: "BTC".to_string(),
             quote: "USDT".to_string(),
         },
+        create_time: chrono::Utc::now().timestamp_micros() as u64,
+        stp_strategy: StpStrategy::CancelTaker,
     }
 }
 
