@@ -83,6 +83,7 @@ message Order{
     bool post_only = 12; // true表示只挂单不吃单
     uint64 trade_id = 13; // 创建订单时初始化，此后不变
     uint64 prev_trade_id = 14;
+    uint64 version = 15; // 订单版本号，每次修改订单时+1
 }
 
 

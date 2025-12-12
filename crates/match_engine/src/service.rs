@@ -27,6 +27,7 @@ struct CmdWrapper<T: Send + Sync + 'static> {
     // crtical: 此seq_id只用于ME内部故障恢复和幂等
     seq_id: u64,
     prev_seq_id: u64,
+    ts: u64,
 }
 
 impl<T> CmdWrapper<T>
@@ -38,6 +39,7 @@ where
             inner,
             seq_id: 0,
             prev_seq_id: 0,
+            ts: 0,
         }
     }
 }
@@ -49,6 +51,10 @@ where
     fn set_seq_id(&mut self, seq_id: u64, prev_seq_id: u64) {
         self.seq_id = seq_id;
         self.prev_seq_id = prev_seq_id;
+    }
+
+    fn set_ts(&mut self, ts: u64) {
+        self.ts = ts;
     }
 }
 

@@ -824,6 +824,7 @@ mod test {
             },
             stp_strategy: tte_core::pbcode::oms::StpStrategy::CancelTaker,
             create_time: chrono::Utc::now().timestamp_micros() as u64,
+            version: 0,
         };
         _ = ob.place_order(order)
     }
@@ -857,6 +858,7 @@ mod test {
             },
             stp_strategy: tte_core::pbcode::oms::StpStrategy::CancelTaker,
             create_time: chrono::Utc::now().timestamp_micros() as u64,
+            version: 0,
         };
         ob.place_order(order)
     }

@@ -83,6 +83,7 @@ impl FileParser {
                 trade_id: 0,
                 prev_trade_id: 0,
                 create_time: create_ts_us,
+                version: 1,
             }),
         })
     }

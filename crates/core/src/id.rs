@@ -6,22 +6,14 @@
 pub struct IDGenerator;
 
 impl IDGenerator {
-    pub fn gen_order_id(account_id: u64) -> String {
+    pub fn gen_order_id(_: u64) -> String {
         format!(
-            "O{:07}N{}",
-            Self::account_id_hash(account_id) % 10000000,
-            // uuid without -
+            "ON{}",
             uuid::Uuid::new_v4()
                 .to_string()
                 .to_uppercase()
                 .replace("-", ""),
         )
-    }
-
-    #[inline]
-    fn account_id_hash(account_id: u64) -> u64 {
-        // id ^ secret
-        account_id ^ 0x5A5A5A5A5A5A5A5A
     }
 }
 

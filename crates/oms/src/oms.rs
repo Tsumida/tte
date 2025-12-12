@@ -126,6 +126,7 @@ pub trait OMSMatchResultHandler {
         &mut self,
         trade_id: u64,
         prev_trade_id: u64,
+        ts: u64,
         record: &oms::FillRecord,
     ) -> Result<OMSChangeResult, OMSErr>;
 
@@ -133,6 +134,7 @@ pub trait OMSMatchResultHandler {
         &mut self,
         trade_id: u64,
         prev_trade_id: u64,
+        ts: u64,
         result: &oms::CancelResult,
     ) -> Result<OMSChangeResult, OMSErr>;
 }
@@ -383,9 +385,11 @@ impl OMS {
     ) -> Result<OrderDetail, OMSErr> {
         let update_order_fields = |order: &mut OrderDetail| {
             order.set_filled_qty(order.filled_qty() + filled_qty);
+            order.set_last_trade_id(std::cmp::max(*order.last_trade_id(), trade_id));
+
+            order.advance_version();
             order.set_current_state(state);
             order.set_update_time(update_time);
-            order.set_last_trade_id(std::cmp::max(*order.last_trade_id(), trade_id));
         };
 
         let orders = self
@@ -426,6 +430,7 @@ impl OMS {
         direction: Direction,
         trade_id: u64,
         record: &oms::FillRecord,
+        ts: u64,
     ) -> Result<Vec<oms::OrderEvent>, OMSErr> {
         // 更新活跃订单状态
         let qty = Decimal::from_str(&record.quantity).map_err(|_| {
@@ -446,7 +451,7 @@ impl OMS {
             qty,
             taker_state,
             trade_id,
-            chrono::Utc::now().timestamp_millis() as u64,
+            ts,
             record.is_taker_fulfilled,
         )?;
 
@@ -457,7 +462,7 @@ impl OMS {
             qty,
             maker_state,
             trade_id,
-            chrono::Utc::now().timestamp_millis() as u64,
+            ts,
             record.is_maker_fulfilled,
         )?;
 
@@ -473,6 +478,7 @@ impl OMS {
         direction: Direction,
         account_id: u64,
         order_id: &str,
+        ts: u64,
     ) -> Result<Vec<oms::OrderEvent>, OMSErr> {
         if let Some(orders) = self.active_orders.get_mut(&account_id) {
             let order_map = match direction {
@@ -482,6 +488,8 @@ impl OMS {
             };
             match order_map.remove(order_id) {
                 Some(mut canceled_order) => {
+                    canceled_order.advance_version();
+                    canceled_order.set_update_time(ts);
                     canceled_order.set_current_state(oms::OrderState::Cancelled);
                     let order_event = order_event_from_detail(&canceled_order);
                     self.inactivate_order(account_id, canceled_order);
@@ -617,6 +625,7 @@ impl OMSMatchResultHandler for OMS {
         &mut self,
         trade_id: u64,
         _prev_trade_id: u64,
+        ts: u64,
         record: &oms::FillRecord,
     ) -> Result<OMSChangeResult, OMSErr> {
         let mr = FillRecord::from_pb(record).map_err(|e| {
@@ -626,7 +635,7 @@ impl OMSMatchResultHandler for OMS {
         let match_id = mr.match_id;
 
         // 更新order状态
-        let order_event = self.fill_active_order(mr.direction, trade_id, record)?;
+        let order_event = self.fill_active_order(mr.direction, trade_id, record, ts)?;
 
         // 更新ledger状态
         let spot_events = self
@@ -654,16 +663,27 @@ impl OMSMatchResultHandler for OMS {
         &mut self,
         _trade_id: u64,
         _prev_trade_id: u64,
+        ts: u64,
         result: &oms::CancelResult,
     ) -> Result<OMSChangeResult, OMSErr> {
-        let record = CancelOrderResult::from(result); // todo: error handling
+        let record = CancelOrderResult::from_pb(result).map_err(|e| {
+            error!("CancelOrderResult::from failed: {}", e);
+            OMSErr::new(
+                err_code::ERR_OMS_MATCH_RESULT_FAILED,
+                "invalid cancel result",
+            )
+        })?;
         if result.order_state == OrderState::Cancelled as i32 {
             // 更新订单状态
-            let order_event =
-                self.cancel_active_order(record.direction, record.account_id, &record.order_id)?;
+            let order_event = self.cancel_active_order(
+                record.direction,
+                record.account_id,
+                &record.order_id,
+                ts,
+            )?;
 
             // 更新账本状态
-            self.ledger.cancel_order(&record).map_err(|e| {
+            let ledger_event = self.ledger.cancel_order(&record).map_err(|e| {
                 error!(
                     "cancel_order failed: account_id={}, order_id={}, err={}",
                     record.account_id, record.order_id, e
@@ -672,9 +692,9 @@ impl OMSMatchResultHandler for OMS {
                     err_code::ERR_OMS_MATCH_RESULT_FAILED,
                     "cancel_result processing failed",
                 )
-            })?;
+            });
             return Ok(OMSChangeResult {
-                spot_change_result: vec![],
+                spot_change_result: vec![ledger_event],
                 order_event,
                 match_request: None,
             });
@@ -696,7 +716,6 @@ impl OrderBuilder {
         OrderBuilder { create_order: true }
     }
 
-    // risk: 保证和pb的完全一致
     pub fn build(
         &mut self,
         trade_id: u64,
@@ -728,6 +747,7 @@ impl OrderBuilder {
             stp_strategy: oms::StpStrategy::from_i32(order.stp_strategy).ok_or_else(|| {
                 OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid stp strategy")
             })?,
+            version: order.version,
         })
     }
 }

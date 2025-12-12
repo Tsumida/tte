@@ -33,6 +33,7 @@ pub fn new_limit_order(
         },
         create_time: chrono::Utc::now().timestamp_micros() as u64,
         stp_strategy: StpStrategy::CancelTaker,
+        version: 0,
     }
 }
 

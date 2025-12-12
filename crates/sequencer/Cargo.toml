@@ -8,6 +8,7 @@ path = "src/lib.rs"
 
 
 [dependencies]
+chrono.workspace = true
 tonic.workspace = true
 tokio.workspace = true
 

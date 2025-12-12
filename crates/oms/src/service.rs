@@ -67,17 +67,21 @@ enum CmdFlow {
 // refactor: 这个类型字段起来很麻烦;
 #[derive(Debug)]
 struct OMSCmd {
-    // cmd: Arc<Box<oms::TradeCmd>>,
-    seq_id: u64,
-    prev_seq_id: u64,
     cmd: CmdFlow,
     rsp_chan: Option<InformSender>,
+    seq_id: u64,
+    prev_seq_id: u64,
+    ts: u64,
 }
 
 impl SequenceSetter for OMSCmd {
     fn set_seq_id(&mut self, seq_id: u64, prev_seq_id: u64) {
         self.seq_id = seq_id;
         self.prev_seq_id = prev_seq_id;
+    }
+
+    fn set_ts(&mut self, ts: u64) {
+        self.ts = ts;
     }
 }
 
@@ -92,6 +96,7 @@ impl OMSCmd {
             OMSCmd {
                 seq_id: 0,
                 prev_seq_id: 0,
+                ts: 0,
                 cmd: CmdFlow::TradeCmd(oms::TradeCmd {
                     trade_id: 0,
                     prev_trade_id: 0,
@@ -115,6 +120,7 @@ impl OMSCmd {
             OMSCmd {
                 seq_id: 0,
                 prev_seq_id: 0,
+                ts: 0,
                 cmd: CmdFlow::TradeCmd(oms::TradeCmd {
                     trade_id: 0,
                     prev_trade_id: 0,
@@ -135,6 +141,7 @@ impl OMSCmd {
         OMSCmd {
             seq_id: 0,
             prev_seq_id: 0,
+            ts: 0,
             cmd: CmdFlow::MatchResult(match_results),
             rsp_chan: None,
         }
@@ -534,6 +541,7 @@ impl ApplyThread {
             for cmd in batch.drain(..) {
                 // todo: set ready if prev_seq_id <= oms.seq_id, else waits preceding cmds
                 let mut err = None;
+                let ts = cmd.ts;
                 match cmd.cmd {
                     CmdFlow::TradeCmd(trade_cmd) => {
                         // todo: validate cmd fields
@@ -576,7 +584,8 @@ impl ApplyThread {
                                 continue;
                             }
                             if let Err(e) =
-                                Self::handle_match_result(&mut oms, &mr, &mut event_buffer).await
+                                Self::handle_match_result(&mut oms, &mr, ts, &mut event_buffer)
+                                    .await
                             {
                                 error!(
                                     "OMS match_result(trade_id={}, prev={}) invalid: {:?}",
@@ -669,6 +678,7 @@ impl ApplyThread {
     async fn handle_match_result(
         oms: &mut OMS,
         mr: &oms::MatchResult,
+        ts: u64,
         event_buffer: &mut SystemEvent,
     ) -> Result<(), OMSErr> {
         let mut no_op = vec![];
@@ -681,7 +691,7 @@ impl ApplyThread {
         match action {
             oms::BizAction::FillOrder => {
                 for record in &mr.records {
-                    match oms.handle_success_fill(mr.trade_id, mr.prev_trade_id, record) {
+                    match oms.handle_success_fill(mr.trade_id, mr.prev_trade_id, ts, record) {
                         Ok(change_res) => {
                             Self::collect_events(change_res, &mut no_op, event_buffer);
                         }
@@ -700,7 +710,7 @@ impl ApplyThread {
             oms::BizAction::CancelOrder => {
                 if let Some(result) = mr.cancel_result.as_ref() {
                     let change_res =
-                        oms.handle_success_cancel(mr.trade_id, mr.prev_trade_id, result)?;
+                        oms.handle_success_cancel(mr.trade_id, mr.prev_trade_id, ts, result)?;
                     Self::collect_events(change_res, &mut no_op, event_buffer);
                 } else {
                     return Err(OMSErr::new(
@@ -1028,48 +1038,52 @@ impl TradeEventBus {
         let balance_payload = batch.balance_events.encode_to_vec();
         // todo: group by trade pair
         // todo: partition by account_id + order_id
-        if let Err(e) = self
-            .order_event_producer
-            .send(
-                rdkafka::producer::FutureRecord::to(self.order_producer_cfg.topic())
-                    .key("")
-                    .partition(0)
-                    .payload(&order_payload),
-                std::time::Duration::from_millis(500),
-            )
-            .await
-            .map_err(|(e, _)| {
-                tracing::error!("Failed to send event: {:?}", e);
-                OMSErr::new(err_code::ERR_INTERNAL, "kafka send failed")
-            })
-        {
-            error!(
-                "Failed to emit event to {}: {:?}",
-                self.order_producer_cfg.topic(),
-                e
-            );
+        if batch.order_events.events.len() > 0 {
+            if let Err(e) = self
+                .order_event_producer
+                .send(
+                    rdkafka::producer::FutureRecord::to(self.order_producer_cfg.topic())
+                        .key("")
+                        .partition(0)
+                        .payload(&order_payload),
+                    std::time::Duration::from_millis(500),
+                )
+                .await
+                .map_err(|(e, _)| {
+                    tracing::error!("Failed to send event: {:?}", e);
+                    OMSErr::new(err_code::ERR_INTERNAL, "kafka send failed")
+                })
+            {
+                error!(
+                    "Failed to emit event to {}: {:?}",
+                    self.order_producer_cfg.topic(),
+                    e
+                );
+            }
         }
 
-        if let Err(e) = self
-            .ledger_event_producer
-            .send(
-                rdkafka::producer::FutureRecord::to(self.ledger_producer_cfg.topic())
-                    .key("")
-                    .partition(0)
-                    .payload(&balance_payload),
-                std::time::Duration::from_millis(500),
-            )
-            .await
-            .map_err(|(e, _)| {
-                tracing::error!("Failed to send event: {:?}", e);
-                OMSErr::new(err_code::ERR_INTERNAL, "kafka send failed")
-            })
-        {
-            error!(
-                "Failed to emit event to {}: {:?}",
-                self.ledger_producer_cfg.topic(),
-                e
-            );
+        if batch.balance_events.events.len() > 0 {
+            if let Err(e) = self
+                .ledger_event_producer
+                .send(
+                    rdkafka::producer::FutureRecord::to(self.ledger_producer_cfg.topic())
+                        .key("")
+                        .partition(0)
+                        .payload(&balance_payload),
+                    std::time::Duration::from_millis(500),
+                )
+                .await
+                .map_err(|(e, _)| {
+                    tracing::error!("Failed to send event: {:?}", e);
+                    OMSErr::new(err_code::ERR_INTERNAL, "kafka send failed")
+                })
+            {
+                error!(
+                    "Failed to emit event to {}: {:?}",
+                    self.ledger_producer_cfg.topic(),
+                    e
+                );
+            }
         }
     }
 }

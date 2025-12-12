@@ -50,6 +50,9 @@ pub struct Order {
     pub trade_id: u64,
     #[prost(uint64, tag = "14")]
     pub prev_trade_id: u64,
+    /// 订单版本号，每次修改订单时+1
+    #[prost(uint64, tag = "15")]
+    pub version: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]

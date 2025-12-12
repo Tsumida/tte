@@ -95,6 +95,8 @@ pub struct Order {
     pub stp_strategy: StpStrategy,
     #[getset(get = "pub")]
     pub create_time: u64,
+    #[getset(get = "pub")]
+    pub version: u64,
 }
 
 impl Into<pb::Order> for Order {
@@ -114,6 +116,7 @@ impl Into<pb::Order> for Order {
             quantity: self.target_qty.to_string(),
             create_time: self.create_time,
             stp_strategy: self.stp_strategy as i32,
+            version: self.version,
         }
     }
 }
@@ -139,6 +142,7 @@ impl Order {
             stp_strategy: pb::StpStrategy::from_i32(om_order.stp_strategy)
                 .ok_or("invalid stp_strategy")?,
             create_time: om_order.create_time,
+            version: om_order.version,
         })
     }
 }
@@ -166,6 +170,10 @@ impl OrderDetail {
             last_trade_id: 0,
             update_time: 0,
         }
+    }
+
+    pub fn advance_version(&mut self) {
+        self.original.version += 1;
     }
 }
 
@@ -333,20 +341,18 @@ pub struct CancelOrderResult {
     pub order_state: OrderState,
 }
 
-impl From<&pb::CancelResult> for CancelOrderResult {
-    fn from(cr: &pb::CancelResult) -> Self {
-        CancelOrderResult {
+impl CancelOrderResult {
+    pub fn from_pb(cr: &pb::CancelResult) -> Result<Self, Box<dyn std::error::Error>> {
+        let trade_pair = cr.trade_pair.as_ref().ok_or("missing trade pair")?;
+        Ok(CancelOrderResult {
             is_cancel_success: cr.order_state == pb::OrderState::Cancelled as i32,
             err_msg: None,
-            trade_pair: TradePair::new(
-                &cr.trade_pair.as_ref().unwrap().base,
-                &cr.trade_pair.as_ref().unwrap().quote,
-            ),
-            direction: pb::Direction::from_i32(cr.direction).unwrap_or(pb::Direction::Buy),
+            trade_pair: TradePair::new(&trade_pair.base, &trade_pair.quote),
+            direction: pb::Direction::from_i32(cr.direction).ok_or("unknown direction")?,
             order_id: cr.order_id.clone(),
             account_id: cr.account_id,
-            order_state: pb::OrderState::from_i32(cr.order_state).unwrap_or(pb::OrderState::New),
-        }
+            order_state: pb::OrderState::from_i32(cr.order_state).ok_or("unknown order state")?,
+        })
     }
 }
 
