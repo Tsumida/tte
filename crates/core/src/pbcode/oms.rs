@@ -32,8 +32,8 @@ pub struct Order {
     #[prost(string, tag = "7")]
     pub quantity: ::prost::alloc::string::String,
     /// us
-    #[prost(string, tag = "8")]
-    pub create_time: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "8")]
+    pub create_time: u64,
     /// 可选
     #[prost(string, tag = "9")]
     pub client_order_id: ::prost::alloc::string::String,
@@ -309,6 +309,20 @@ pub struct OrderEvent {
     /// 下单、最新成交时间戳, 单位us, 用于过滤旧数据
     #[prost(uint64, tag = "13")]
     pub tx_time: u64,
+    /// 对应OrderType枚举
+    #[prost(string, tag = "14")]
+    pub order_type: ::prost::alloc::string::String,
+    #[prost(bool, tag = "15")]
+    pub post_only: bool,
+    /// 对应TimeInForce枚举
+    #[prost(string, tag = "16")]
+    pub time_in_force: ::prost::alloc::string::String,
+    /// 对应STPStrategy枚举
+    #[prost(string, tag = "17")]
+    pub stp_strategy: ::prost::alloc::string::String,
+    /// 下单时间，us
+    #[prost(uint64, tag = "18")]
+    pub create_time: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]

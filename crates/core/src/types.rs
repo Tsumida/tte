@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::pbcode::oms as pb;
+use crate::pbcode::oms::{self as pb, StpStrategy};
 use getset::{Getters, Setters};
 use prost::Message;
 use rust_decimal::Decimal;
@@ -91,6 +91,10 @@ pub struct Order {
     pub post_only: bool, // post only
     #[getset(get = "pub")]
     pub trade_pair: TradePair,
+    #[getset(get = "pub")]
+    pub stp_strategy: StpStrategy,
+    #[getset(get = "pub")]
+    pub create_time: u64,
 }
 
 impl Into<pb::Order> for Order {
@@ -108,8 +112,8 @@ impl Into<pb::Order> for Order {
             post_only: self.post_only,
             trade_pair: Some(self.trade_pair.into()),
             quantity: self.target_qty.to_string(),
-            create_time: "".to_string(), // TODO
-            stp_strategy: 0,             // TODO
+            create_time: self.create_time,
+            stp_strategy: self.stp_strategy as i32,
         }
     }
 }
@@ -132,6 +136,9 @@ impl Order {
             target_qty: quantity,
             post_only: om_order.post_only,
             trade_pair: om_order.trade_pair.ok_or("missing trade pair")?.into(),
+            stp_strategy: pb::StpStrategy::from_i32(om_order.stp_strategy)
+                .ok_or("invalid stp_strategy")?,
+            create_time: om_order.create_time,
         })
     }
 }
@@ -378,19 +385,25 @@ impl BatchMatchResultTransfer {
 }
 
 pub fn order_event_from_detail(order_detail: &OrderDetail) -> pb::OrderEvent {
+    let original = order_detail.original();
     pb::OrderEvent {
-        account_id: *order_detail.original().account_id(),
-        order_id: order_detail.original().order_id().to_string(),
+        account_id: *original.account_id(),
+        order_id: original.order_id().to_string(),
         trade_id: order_detail.last_trade_id().clone(),
-        prev_trade_id: order_detail.original().prev_trade_id().clone(),
-        base: order_detail.original().trade_pair.base.clone(),
-        quote: order_detail.original().trade_pair.quote.clone(),
-        direction: order_detail.original().direction as i32,
-        price: order_detail.original().price().to_string(),
-        target_qty: order_detail.original().target_qty().to_string(),
+        prev_trade_id: original.prev_trade_id().clone(),
+        base: original.trade_pair.base.clone(),
+        quote: original.trade_pair.quote.clone(),
+        direction: original.direction as i32,
+        price: original.price().to_string(),
+        target_qty: original.target_qty().to_string(),
         filled_qty: order_detail.filled_qty().to_string(),
         order_state: pb::OrderState::Cancelled as i32,
-        client_order_id: order_detail.original().client_order_id().clone(),
+        client_order_id: original.client_order_id().clone(),
         tx_time: order_detail.update_time,
+        order_type: original.order_type.as_str_name().to_string(),
+        post_only: original.post_only,
+        stp_strategy: original.stp_strategy.as_str_name().to_string(),
+        create_time: original.create_time,
+        time_in_force: original.time_in_force.as_str_name().to_string(),
     }
 }

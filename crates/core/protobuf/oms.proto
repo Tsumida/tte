@@ -76,7 +76,7 @@ message Order{
     int32 order_type = 5;   // 对应OrderType枚举
     string price = 6;
     string quantity = 7;
-    string create_time = 8; // us
+    uint64 create_time = 8; // us
     string client_order_id = 9; // 可选
     int32 stp_strategy = 10; // 对应STPStrategy枚举
     uint64 account_id = 11; 
@@ -220,6 +220,11 @@ message OrderEvent{
     uint64 trade_id = 11;
     uint64 prev_trade_id = 12;
     uint64 tx_time = 13; // 下单、最新成交时间戳, 单位us, 用于过滤旧数据
+    string order_type = 14; // 对应OrderType枚举
+    bool post_only = 15;
+    string time_in_force = 16; // 对应TimeInForce枚举
+    string stp_strategy = 17; // 对应STPStrategy枚举
+    uint64 create_time = 18; // 下单时间，us
 }
 
 message BatchOrderEvent{
