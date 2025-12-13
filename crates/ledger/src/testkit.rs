@@ -14,10 +14,10 @@ pub fn place_orders(
     orders: impl Into<Vec<Order>>,
     amounts: Vec<Decimal>,
 ) -> Vec<SpotChangeResult> {
-    let mut results = Vec::new();
+    let mut handlers = Vec::new();
     for (order, amount) in orders.into().into_iter().zip(amounts.into_iter()) {
-        let res = ledger.place_order(order, amount).unwrap();
-        results.push(res);
+        let h = ledger.place_order(order, amount).unwrap();
+        handlers.push(h);
     }
-    results
+    handlers.into_iter().map(|h| h(ledger)).collect()
 }

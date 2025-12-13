@@ -11,24 +11,17 @@ use tte_core::{
     types::{CancelOrderResult, Direction, FillRecord, Order, Symbol},
 };
 
+type SpotTxResult = Result<Box<dyn FnOnce(&mut SpotLedger) -> SpotChangeResult>, SpotLedgerErr>;
+type BatchSpotTxResult =
+    Result<Box<dyn FnOnce(&mut SpotLedger) -> Vec<SpotChangeResult>>, SpotLedgerErr>;
+
 pub trait SpotLedgerRPCHandler {
-    fn place_order(
-        &mut self,
-        order: Order,
-        amount: Decimal,
-    ) -> Result<SpotChangeResult, SpotLedgerErr>;
+    fn place_order(&mut self, order: Order, amount: Decimal) -> SpotTxResult;
 }
 
 pub trait SpotLedgerMatchResultConsumer {
-    fn fill_order(
-        &mut self,
-        match_record: &FillRecord,
-    ) -> Result<Vec<SpotChangeResult>, SpotLedgerErr>;
-
-    fn cancel_order(
-        &mut self,
-        result: &CancelOrderResult,
-    ) -> Result<SpotChangeResult, SpotLedgerErr>;
+    fn fill_order(&mut self, match_record: &FillRecord) -> BatchSpotTxResult;
+    fn cancel_order(&mut self, result: &CancelOrderResult) -> SpotTxResult;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -385,10 +378,7 @@ impl SpotLedger {
 
 impl SpotLedgerMatchResultConsumer for SpotLedger {
     // 对taker和maker 依次执行
-    fn fill_order(
-        &mut self,
-        match_result: &FillRecord,
-    ) -> Result<Vec<SpotChangeResult>, SpotLedgerErr> {
+    fn fill_order(&mut self, match_result: &FillRecord) -> BatchSpotTxResult {
         let spot_id = self.advance_spot_id();
         let taker_order_id = match_result.taker_order_id.clone();
         let maker_order_id = match_result.maker_order_id.clone();
@@ -478,17 +468,25 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
         let after = [taker_base_tx, taker_quote_tx, maker_base_tx, maker_quote_tx];
 
         // 生成spot_log
-        Ok(before
-            .into_iter()
-            .zip(after.into_iter())
-            .map(|(before, after)| self.commit(spot_id, BizAction::FillOrder as i32, before, after))
-            .collect())
+        Ok(Box::new(move |l: &mut SpotLedger| {
+            let mut results = Vec::new();
+            for i in 0..before.len() {
+                let spot_change_result = l.commit(
+                    spot_id,
+                    BizAction::FillOrder as i32,
+                    before[i].clone(),
+                    after[i].clone(),
+                );
+                results.push(spot_change_result);
+            }
+            results
+        }))
     }
 
     fn cancel_order(
         &mut self,
         result: &CancelOrderResult,
-    ) -> Result<SpotChangeResult, SpotLedgerErr> {
+    ) -> Result<Box<dyn FnOnce(&mut SpotLedger) -> SpotChangeResult>, SpotLedgerErr> {
         if !result.is_cancel_success {
             return Err(SpotLedgerErr::new(
                 err_code::ERR_INPOSSIBLE_STATE,
@@ -506,17 +504,22 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
                 ));
             }
         };
-        let spot_id = self.advance_spot_id();
-        let mut tx = self.get_spot_and_frozen(result.account_id, currency, &result.order_id);
+
+        let spot_id = self.current_spot_id() + 1;
+        let tx = self.get_spot_and_frozen(result.account_id, currency, &result.order_id);
         if tx.spot.is_none() {
             return Err(SpotLedgerErr::new(
                 err_code::ERR_INPOSSIBLE_STATE,
-                "Spot is None in cancel_order",
+                "Spot is None in cancel_order pre-check",
             ));
         }
-        let before = tx.clone();
-        tx.release_all()?;
-        Ok(self.commit(spot_id, BizAction::CancelOrder as i32, before, tx))
+
+        Ok(Box::new(move |l: &mut SpotLedger| {
+            let mut tx = tx.clone();
+            let before = tx.clone();
+            tx.release_all().unwrap();
+            l.commit(spot_id, BizAction::CancelOrder as i32, before, tx)
+        }))
     }
 }
 
@@ -525,7 +528,7 @@ impl SpotLedgerRPCHandler for SpotLedger {
         &mut self,
         order: Order,
         amount: Decimal,
-    ) -> Result<SpotChangeResult, SpotLedgerErr> {
+    ) -> Result<Box<dyn FnOnce(&mut SpotLedger) -> SpotChangeResult>, SpotLedgerErr> {
         // query: 从self获取最新状态, 构建SingleCurrencyTx
         let spot_id = self.advance_spot_id();
         let currency = match order.direction {
@@ -540,7 +543,10 @@ impl SpotLedgerRPCHandler for SpotLedger {
         };
         let mut tx = before.clone();
         tx.freeze(&order.order_id, amount)?;
-        Ok(self.commit(spot_id, BizAction::PlaceOrder as i32, before, tx))
+        Ok(Box::new(move |l: &mut SpotLedger| {
+            let after = tx.clone();
+            l.commit(spot_id, BizAction::PlaceOrder as i32, before, after)
+        }))
     }
 }
 
@@ -628,7 +634,7 @@ mod tests {
                 }
             };
             tracing::info!("Placing order: {:?}", amount.to_string());
-            let _ = ledger.place_order(order.clone(), amount).unwrap();
+            let _ = ledger.place_order(order.clone(), amount).unwrap()(&mut ledger);
         }
 
         let match_records = [
@@ -638,7 +644,7 @@ mod tests {
 
         for match_record in match_records.into_iter() {
             for record in match_record.fill_result.unwrap().results.iter() {
-                let _ = ledger.fill_order(record).unwrap();
+                let _ = ledger.fill_order(record).unwrap()(&mut ledger);
             }
         }
 
@@ -680,7 +686,8 @@ mod tests {
                 }
             };
             tracing::info!("Placing order: {:?}", amount.to_string());
-            let _ = ledger.place_order(order.clone(), amount).unwrap();
+            let commit_fn = ledger.place_order(order.clone(), amount).unwrap();
+            let _ = commit_fn(&mut ledger);
         }
 
         let match_records = [testkit::fill_buy_limit_order(
@@ -691,7 +698,7 @@ mod tests {
 
         for match_record in match_records.into_iter() {
             for record in match_record.fill_result.unwrap().results.iter() {
-                let _ = ledger.fill_order(record).unwrap();
+                let _ = ledger.fill_order(record).unwrap()(&mut ledger);
             }
         }
 
@@ -714,15 +721,13 @@ mod tests {
                 == Decimal::from_f64(2000.0).unwrap(),
         );
 
-        assert!(
-            ledger
-                .cancel_order(
-                    &testkit::cancel_buy_limit_order(&orders[0])
-                        .cancel_result
-                        .unwrap()
-                )
-                .is_ok()
-        );
+        ledger
+            .cancel_order(
+                &testkit::cancel_buy_limit_order(&orders[0])
+                    .cancel_result
+                    .unwrap(),
+            )
+            .unwrap()(&mut ledger);
         let balance_1001_after = ledger.get_all_balances(1001);
         println!("Balance 1001 after cancel: {:?}", balance_1001_after);
         assert!(balance_1001_after.get(&"USDT".to_string()).unwrap().deposit == dec!(7000.0));

@@ -638,16 +638,7 @@ impl ApplyThread {
             change_res
                 .spot_change_result
                 .into_iter()
-                .filter_map(|res| match res {
-                    Ok(be) => be.to_balance_event(),
-                    Err(e) => {
-                        error!(
-                            "Failed to convert SpotChangeResult to BalanceEvent: {:?}",
-                            e
-                        );
-                        None
-                    }
-                }),
+                .filter_map(|res| res.to_balance_event()),
         );
     }
 
@@ -674,7 +665,7 @@ impl ApplyThread {
             .ok();
     }
 
-    #[instrument(level = "info", skip(oms, mr))]
+    #[instrument(level = "info", skip_all)]
     async fn handle_match_result(
         oms: &mut OMS,
         mr: &oms::MatchResult,
@@ -822,7 +813,7 @@ impl MatchRequestSender {
     }
 
     #[instrument(
-        level = "info", skip(self, cmds), 
+        level = "info", skip_all, 
         fields(
             trade_pair = %trade_pair.pair(),
         )

@@ -20,10 +20,10 @@ pub static ERR_OMS_PRICE_OUT_OF_RANGE: i32 = 1000202; // 价格超出范围
 pub static ERR_OMS_QTY_OUT_OF_RANGE: i32 = 1000203; // 数量过小
 pub static ERR_OMS_DUPLICATE_CLI_ORD_ID: i32 = 1000204; // client_order_id重复, 等于下单重复
 pub static ERR_OMS_PAIR_NOT_FOUND: i32 = 1000205; // 交易对未找到
-pub static ERR_OMS_ORDER_NOT_FOUND: i32 = 100206; // 订单未找到
-pub static ERR_OMS_ACCOUNT_NOT_FOUND: i32 = 100207; // 账户未找到
-pub static ERR_OMS_INVALID_MATCH_RESULT: i32 = 100208; // 撮合返回数据无法解析
-pub static ERR_OMS_MATCH_RESULT_FAILED: i32 = 100209; // 撮合结果处理失败, 需要介入处理
+pub static ERR_OMS_ORDER_NOT_FOUND: i32 = 1000206; // 订单未找到
+pub static ERR_OMS_ACCOUNT_NOT_FOUND: i32 = 1000207; // 账户未找到
+pub static ERR_OMS_INVALID_MATCH_RESULT: i32 = 1000208; // 撮合返回数据无法解析
+pub static ERR_OMS_MATCH_RESULT_FAILED: i32 = 1000209; // 撮合结果处理失败, 需要介入处理
 
 pub static ERR_LEDGER_INSUFFICIENT_BALANCE: i32 = 1000301; // 余额不足
 pub static ERR_LEDGER_INVALID_ACCOUNT: i32 = 1000302; // 无效账户
