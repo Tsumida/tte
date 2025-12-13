@@ -849,3 +849,85 @@ impl FeeCalculator {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn test_atomic_place_order() {
+        // Insufficent balance
+        // place_order with BTC=100, but ledger has only BTC=50
+        let balances = vec![
+            (1001, "USDT", 1_000_000.0),
+            (1001, "BTC", 50.0),
+            (1001, "ETH", 500.0),
+        ];
+        let market_data = vec![
+            (
+                TradePair::new("BTC", "USDT"),
+                dec!(80000.0),
+                oms::TradePairConfig {
+                    trade_pair: "BTCUSDT".to_string(),
+                    min_price_increment: "0.01".to_string(),
+                    min_quantity_increment: "0.0001".to_string(),
+                    state: 1,
+                    volatility_limit: "0.1".to_string(),
+                },
+            ),
+            (
+                TradePair::new("ETH", "USDT"),
+                dec!(4000.0),
+                oms::TradePairConfig {
+                    trade_pair: "ETHUSDT".to_string(),
+                    min_price_increment: "0.01".to_string(),
+                    min_quantity_increment: "0.0001".to_string(),
+                    state: 1,
+                    volatility_limit: "0.1".to_string(),
+                },
+            ),
+        ];
+        let mut oms = OMS::new();
+        oms.with_init_ledger(balances).with_market_data(market_data);
+
+        let result = oms.handle_rpc_cmd(
+            1,
+            &TradePair::new("BTC", "USDT"),
+            oms::RpcCmd {
+                biz_action: BizAction::PlaceOrder as i32,
+                place_order_req: Some(oms::PlaceOrderReq {
+                    order: Some(oms::Order {
+                        trade_id: 1,
+                        prev_trade_id: 0,
+                        order_id: "".to_string(),
+                        client_order_id: "cli_ord_001".to_string(),
+                        account_id: 1001,
+                        trade_pair: Some(TradePair::new("BTC", "USDT")),
+                        direction: Direction::Buy as i32,
+                        price: "80000".to_string(),
+                        quantity: "50.0".to_string(),
+                        post_only: false,
+                        order_type: OrderType::Limit as i32,
+                        time_in_force: TimeInForce::Gtk as i32,
+                        stp_strategy: oms::StpStrategy::CancelTaker as i32,
+                        create_time: 0,
+                        version: 0,
+                    }),
+                }),
+                cancel_order_req: None,
+            },
+        );
+        assert!(result.is_err());
+        println!("Expected error: {:?}", result.err().unwrap());
+
+        // expect: no balance changed
+        let usdt_balance = oms.ledger.get_spot(1001, "USDT").unwrap();
+        assert_eq!(usdt_balance.deposit(), &dec!(1_000_000.0));
+        assert_eq!(usdt_balance.frozen(), &dec!(0.0));
+
+        // expect: no active orders
+        let account_orders = oms.active_orders.get(&1001);
+        assert!(account_orders.is_none());
+    }
+}

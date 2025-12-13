@@ -24,12 +24,17 @@ pub trait SpotLedgerMatchResultConsumer {
     fn cancel_order(&mut self, result: &CancelOrderResult) -> SpotTxResult;
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
 pub struct Spot {
+    #[getset(get = "pub")]
     account_id: u64,
+    #[getset(get = "pub")]
     currency: Symbol,
+    #[getset(get = "pub")]
     deposit: Decimal,
+    #[getset(get = "pub")]
     frozen: Decimal,
+    #[getset(get = "pub")]
     update_time: u64,
 }
 
