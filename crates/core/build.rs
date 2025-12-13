@@ -2,10 +2,8 @@
 use tonic_build;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // path: workdir/src/proto/oms.pb
-
     let base_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let proto_path = format!("{}/src/pb", base_dir);
+    let proto_path = format!("{}/protobuf", base_dir);
     let out_dir = format!("{}/src/pbcode", base_dir);
 
     let proto_files = std::fs::read_dir(&proto_path)?

@@ -1,6 +1,7 @@
 use getset::Getters;
 use rdkafka::{Message, consumer::Consumer, message::BorrowedMessage};
 
+use tracing::debug;
 use tte_core::pbcode::oms::TradePair;
 
 #[derive(Debug, Clone, Getters)]
@@ -72,8 +73,8 @@ impl ConsumerConfig {
 }
 
 pub fn print_kafka_msg_meta(msg: &BorrowedMessage) {
-    println!(
-        "(key={:?}, topic={}, partition={}, offset={})",
+    debug!(
+        "key={:?}, topic={}, partition={}, offset={}",
         msg.key(),
         msg.topic(),
         msg.partition(),

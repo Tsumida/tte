@@ -10,38 +10,6 @@ services:
       - COLLECTOR_OTLP_ENABLED=true
     restart: unless-stopped
 
-  mvp_server:
-    image: mvp_server:latest
-    container_name: mvp_server
-    environment:
-      - RUST_LOG=info
-      - SERVICE_NAME=mvp_server
-      - SERVER_MODE=oms
-      - TRACE_ENDPOINT=http://jaeger:4317
-      - GRPC_SERVER_ENDPOINT=0.0.0.0:8080
-      - ENV=dev
-    ports:
-      - "8080:8080"
-    depends_on:
-      - jaeger
-      - kafka-dev
-
-  mvp_me:
-    image: mvp_server:latest
-    container_name: mvp_me
-    environment:
-      - RUST_LOG=info
-      - SERVICE_NAME=mvp_me
-      - SERVER_MODE=me
-      - TRACE_ENDPOINT=http://jaeger:4317
-      - GRPC_SERVER_ENDPOINT=0.0.0.0:8081
-      - ENV=dev
-    ports:
-      - "8081:8081"
-    depends_on:
-      - jaeger
-      - kafka-dev
-
   kafka-dev:
     image: apache/kafka:4.1.1
     container_name: kafka-dev
@@ -67,5 +35,63 @@ services:
     volumes:
       # 持久化 KRaft 模式下的数据
       - kafka_kraft_data:/tmp/kraft-storage
+  
+  # 🌟 新增：Kafka Topic 初始化服务
+  kafka-init-topics:
+    image: apache/kafka:4.1.1 # 使用相同的 Kafka 镜像
+    container_name: kafka-init-topics
+    # 确保在 kafka-dev 容器启动后（并有足够时间初始化）才运行
+    depends_on:
+      kafka-dev:
+        condition: service_started
+    # 核心配置：使用 command 来执行 topic 创建命令
+    # 脚本会在等待 10 秒后，创建 a 和 b 两个 topic
+    command: |
+      /bin/sh -c "
+      echo 'Waiting for kafka-dev to start...' && \
+      sleep 10 && \
+      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka-dev:9092 --topic match_req_BTCUSDT --partitions 1 --replication-factor 1 && \
+      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka-dev:9092 --topic match_result_BTCUSDT --partitions 1 --replication-factor 1 && \
+      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka-dev:9092 --topic order_events --partitions 1 --replication-factor 1 && \
+      /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka-dev:9092 --topic ledger_events --partitions 1 --replication-factor 1 && \
+      echo 'Kafka topics initialized successfully.'
+      "
+    # 设置 restart: on-failure 或 no，因为它只需要运行一次
+    restart: "no"
+  
+  mvp_server:
+    image: mvp_server:latest
+    container_name: mvp_server
+    environment:
+      - RUST_LOG=debug
+      - SERVICE_NAME=mvp_server
+      - SERVER_MODE=oms
+      - TRACE_ENDPOINT=http://jaeger:4317
+      - GRPC_SERVER_ENDPOINT=0.0.0.0:8080
+      - ENV=dev
+    ports:
+      - "8080:8080"
+    depends_on:
+      - jaeger
+      - kafka-dev
+      - kafka-init-topics
+
+  mvp_me:
+    image: mvp_server:latest
+    container_name: mvp_me
+    environment:
+      - RUST_LOG=debug
+      - SERVICE_NAME=mvp_me
+      - SERVER_MODE=me
+      - TRACE_ENDPOINT=http://jaeger:4317
+      - GRPC_SERVER_ENDPOINT=0.0.0.0:8081
+      - ENV=dev
+    ports:
+      - "8081:8081"
+    depends_on:
+      - jaeger
+      - kafka-dev
+      - kafka-init-topics
+
 volumes:
   kafka_kraft_data:

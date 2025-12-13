@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use rdkafka::Message;
 use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 use tte_core::{
     pbcode::oms::{self},
@@ -16,7 +16,7 @@ use crate::orderbook::{OrderBook, OrderBookErr, OrderBookSnapshot, OrderBookSnap
 use tte_infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
 use tte_sequencer::api::{DefaultSequencer, SequenceSetter};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MatchCmd {
     MatchReq(oms::BatchMatchRequest),
     MatchAdminCmd(oms::MatchAdminCmd),
@@ -27,6 +27,7 @@ struct CmdWrapper<T: Send + Sync + 'static> {
     // crtical: 此seq_id只用于ME内部故障恢复和幂等
     seq_id: u64,
     prev_seq_id: u64,
+    ts: u64,
 }
 
 impl<T> CmdWrapper<T>
@@ -38,6 +39,7 @@ where
             inner,
             seq_id: 0,
             prev_seq_id: 0,
+            ts: 0,
         }
     }
 }
@@ -49,6 +51,10 @@ where
     fn set_seq_id(&mut self, seq_id: u64, prev_seq_id: u64) {
         self.seq_id = seq_id;
         self.prev_seq_id = prev_seq_id;
+    }
+
+    fn set_ts(&mut self, ts: u64) {
+        self.ts = ts;
     }
 }
 
@@ -85,6 +91,7 @@ impl MatchEngineService {
             .get(&result_topic)
             .expect("missing match-engine producer config");
 
+        // todo: sequencer持久化恢复
         let (sequencer, sequencer_sender, sequencer_receiver) =
             DefaultSequencer::<CmdWrapper<MatchCmd>>::new(0, batch_size);
 
@@ -220,6 +227,12 @@ impl MatchReqConsumer {
         let batch_match_req = BatchMatchReqTransfer::deserialize(payload).expect("deserialize");
         let cmd = MatchCmd::MatchReq(batch_match_req);
         let cmd_wrapper = CmdWrapper::new(cmd);
+
+        debug!(
+            "Sending match request to sequencer, payload={}",
+            serde_json::to_string(&cmd_wrapper.inner).unwrap()
+        );
+
         self.sequencer_sender
             .send(cmd_wrapper)
             .await
@@ -290,7 +303,8 @@ impl ApplyThread {
             let prev_trade_id = cmd.prev_trade_id;
             let action =
                 oms::BizAction::from_i32(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
-            match self.orderbook.process_trade_cmd(cmd) {
+            let result = self.orderbook.process_trade_cmd(cmd);
+            match result {
                 Ok(r) => match r.action {
                     oms::BizAction::FillOrder => {
                         let fill_result = r.fill_result.as_ref().unwrap();
@@ -373,6 +387,12 @@ impl MatchResultProducer {
         let key = format!("match_result_{}", self.producer_cfg.trade_pair.pair());
         let buf = &BatchMatchResultTransfer::serialize(&batch_match_result)
             .expect("serialize match_result");
+
+        debug!(
+            "match result: {}",
+            serde_json::to_string(&batch_match_result).unwrap()
+        );
+
         self.producer
             .send(
                 rdkafka::producer::FutureRecord::to(self.producer_cfg.topic())

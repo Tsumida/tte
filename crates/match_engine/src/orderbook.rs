@@ -9,23 +9,29 @@ use std::{cmp::min, collections::BTreeMap};
 use getset::Getters;
 use rust_decimal::Decimal;
 
+use tracing::{error, warn};
 use tte_core::err_code;
 use tte_core::pbcode::oms::{self, BizAction};
 use tte_core::types::{
     CancelOrderResult, Direction, FillOrderResult, FillRecord, MatchResult, Order, OrderID,
-    OrderState, OrderType, SeqID, TimeInForce, TradePair,
+    OrderState, OrderType, TimeInForce, TradePair,
 };
 
 // 订单簿键
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct OrderBookKey {
     price: Decimal,
-    seq_id: SeqID,
+    trade_id: u64,
 }
 
 impl OrderBookKey {
-    fn new(price: Decimal, seq_id: SeqID) -> Self {
-        return Self { price, seq_id };
+    fn new(price: Decimal, seq_id: u64) -> Self {
+        return Self {
+            price,
+            trade_id: seq_id,
+        };
     }
 }
 
@@ -68,7 +74,7 @@ impl PartialOrd for KeyExt<OrderBookKey> {
                 } else if a.price < b.price {
                     Some(Ordering::Greater)
                 } else {
-                    a.seq_id.partial_cmp(&b.seq_id)
+                    a.trade_id.partial_cmp(&b.trade_id)
                 }
             }
             (KeyExt::Ask(a), KeyExt::Ask(b)) => {
@@ -78,7 +84,7 @@ impl PartialOrd for KeyExt<OrderBookKey> {
                 } else if a.price > b.price {
                     Some(Ordering::Greater)
                 } else {
-                    a.seq_id.partial_cmp(&b.seq_id)
+                    a.trade_id.partial_cmp(&b.trade_id)
                 }
             }
             _ => panic!("invalid comparation"), // 不能交叉对比
@@ -189,7 +195,7 @@ impl From<Vec<MakerOrder>> for BTreeOrderQueue {
                     direction,
                     OrderBookKey {
                         price: v.order.price,
-                        seq_id: v.order.trade_id,
+                        trade_id: v.order.trade_id,
                     },
                 ),
                 v,
@@ -219,6 +225,10 @@ pub struct OrderBookSnapshot {
     ask_orders: Vec<MakerOrder>,
     #[get = "pub"]
     id_manager: IDManager,
+    #[get( = "pub")]
+    order_id_mapper: HashMap<OrderID, OrderBookKey>,
+    #[get( = "pub")]
+    last_price: Decimal,
 }
 
 pub(crate) trait OrderBookSnapshotHandler {
@@ -286,10 +296,11 @@ impl IDManager {
 
 pub struct OrderBook {
     id_manager: IDManager,
-    order_id_to_orderbook_key: HashMap<OrderID, OrderBookKey>,
+    order_id_mapper: HashMap<OrderID, OrderBookKey>,
     bid_orders: BTreeOrderQueue,
     ask_orders: BTreeOrderQueue,
     trade_pair: TradePair,
+    last_price: Decimal,
 }
 
 // OrderBook需要保证顺序接收OBRequest
@@ -297,10 +308,11 @@ impl OrderBook {
     pub fn new(trade_pair: TradePair) -> Self {
         Self {
             id_manager: IDManager::default(),
-            order_id_to_orderbook_key: HashMap::new(),
+            order_id_mapper: HashMap::new(),
             bid_orders: BTreeOrderQueue::new(Direction::Buy),
             ask_orders: BTreeOrderQueue::new(Direction::Sell),
             trade_pair,
+            last_price: Decimal::ZERO,
         }
     }
 
@@ -374,15 +386,15 @@ impl OrderBook {
         queue.add(
             OrderBookKey {
                 price: order.price,
-                seq_id: order.trade_id,
+                trade_id: order.trade_id,
             },
             maker_order,
         );
-        self.order_id_to_orderbook_key.insert(
+        self.order_id_mapper.insert(
             order.order_id.clone(),
             OrderBookKey {
                 price: order.price,
-                seq_id: order.trade_id,
+                trade_id: order.trade_id,
             },
         );
         Ok(MatchResult {
@@ -398,6 +410,22 @@ impl OrderBook {
         })
     }
 
+    // Require:
+    // 1. Bid => taker_price >= maker_price
+    // 2. Ask => taker_price <= maker_price
+    fn match_price(taker_price: Decimal, maker_price: Decimal, last_price: Decimal) -> Decimal {
+        // 参考: 交易所交易制度和规则深度解读，第95页
+        // 连续竞价下以最后成交价、taker、maker的价格的中位数作为成交价，可以降低成交价的跳变. 这个思想和BTC的出块时间类似
+        if last_price != Decimal::ZERO {
+            let mut prices = [taker_price, maker_price, last_price];
+            prices.sort();
+            prices[1]
+        } else {
+            maker_price
+        }
+    }
+
+    // critical
     // 按指定数量去撮合订单
     fn match_basic_order_by_qty(
         &mut self,
@@ -412,6 +440,7 @@ impl OrderBook {
         } else {
             (&mut self.ask_orders, &mut self.bid_orders)
         };
+        let mut filled_order_ids = Vec::with_capacity(size_hint);
 
         if let Some((mut maker_key, mut maker)) = adversary_q.peek() {
             // keep fill until:
@@ -435,10 +464,12 @@ impl OrderBook {
                 match_keys.push(maker_key);
                 let prev_match_id = self.id_manager.match_id().clone();
                 let match_id = self.id_manager.advance_match_id();
-                results.push(FillRecord {
+                let match_price =
+                    Self::match_price(taker.order.price, maker.order.price, self.last_price);
+                let fill = FillRecord {
                     match_id: match_id,
                     prev_match_id: prev_match_id,
-                    price: maker.order.price,
+                    price: match_price,
                     qty: filled_qty,
                     direction: taker.order.direction,
                     taker_order_id: taker.order.order_id.clone(),
@@ -458,7 +489,16 @@ impl OrderBook {
                     },
                     maker_account_id: maker.order.account_id,
                     trade_pair: taker.order.trade_pair.clone(),
-                });
+                };
+
+                if fill.is_maker_fulfilled {
+                    filled_order_ids.push(maker.order.order_id.clone());
+                }
+                if fill.is_taker_fulfilled {
+                    filled_order_ids.push(taker.order.order_id.clone());
+                }
+
+                results.push(fill);
                 total_filled_qty += filled_qty;
                 if let Some((k, v)) = adversary_q.next(&maker_key) {
                     maker_key = k;
@@ -518,20 +558,13 @@ impl OrderBook {
 
         // 更新当前订单队列
         if put_taker_in_current_q {
-            self.order_id_to_orderbook_key.insert(
-                taker.order.order_id.clone(),
-                OrderBookKey {
-                    price: taker.order.price,
-                    seq_id: taker.order.trade_id,
-                },
-            );
-            current_q.add(
-                OrderBookKey {
-                    price: taker.order.price,
-                    seq_id: taker.order.trade_id,
-                },
-                taker.clone(),
-            );
+            let ob_key = OrderBookKey {
+                price: taker.order.price,
+                trade_id: taker.order.trade_id,
+            };
+            self.order_id_mapper
+                .insert(taker.order.order_id.clone(), ob_key.clone());
+            current_q.add(ob_key, taker.clone());
         }
         // 更新对手方队列
         let n = match_keys.len();
@@ -548,6 +581,11 @@ impl OrderBook {
                     adversary_q.add(maker.0, maker.1);
                 }
             }
+        }
+
+        // 清空已成交订单
+        for order_id in filled_order_ids {
+            self.order_id_mapper.remove(&order_id);
         }
 
         Ok(MatchResult {
@@ -572,6 +610,14 @@ impl OrderBookRequestHandler for OrderBook {
             return self.post_order(order);
         }
 
+        // 前置处理
+        // todo: 结合最小步进，超过的部分进行舍弃.
+        // case:
+        //      0.500000, min_step=0.000001,
+        //      user: buy x / rate = 0.500000123456, quantize to 0.500000
+        //
+        // order.target_qty = quantize_qty(order.target_qty, config.min_step);
+
         match (order.order_type, order.time_in_force) {
             (OrderType::Limit, TimeInForce::Gtk)
             | (OrderType::Market, TimeInForce::Ioc)
@@ -594,7 +640,7 @@ impl OrderBookRequestHandler for OrderBook {
     ) -> Result<MatchResult, OrderBookErr> {
         // 先检查当前订单是否存在
         // 再检查当前订单是否可以撤销
-        match self.order_id_to_orderbook_key.get(&order_id) {
+        match self.order_id_mapper.get(&order_id) {
             Some(ob_key) => {
                 // 检查订单状态
                 let queue = if direction == Direction::Buy {
@@ -606,7 +652,12 @@ impl OrderBookRequestHandler for OrderBook {
                 let order = queue
                     .orders()
                     .get(&KeyExt::new(direction, ob_key.clone()))
-                    .ok_or(OrderBookErr::new(err_code::ERR_OB_ORDER_NOT_FOUND))?;
+                    .ok_or_else(
+                        ||{
+                            warn!("inconsistent state: order_id_mapper contains order_id={}, but order not found in orderbook", order_id);
+                            OrderBookErr::new(err_code::ERR_OB_ORDER_NOT_FOUND)
+                        }
+                    )?;
 
                 match order.order_state {
                     OrderState::New | OrderState::PendingNew | OrderState::PartiallyFilled => {
@@ -615,7 +666,7 @@ impl OrderBookRequestHandler for OrderBook {
                             queue.orders.remove(&KeyExt::new(direction, ob_key.clone()))
                         {
                             // 可以撤销
-                            self.order_id_to_orderbook_key.remove(&order_id);
+                            self.order_id_mapper.remove(&order_id);
                             Ok(MatchResult {
                                 action: BizAction::CancelOrder,
                                 fill_result: None,
@@ -634,17 +685,24 @@ impl OrderBookRequestHandler for OrderBook {
                         }
                     }
                     OrderState::Filled => {
+                        warn!("order already filled: {:?}", order.order_state);
                         return Err(OrderBookErr::new(err_code::ERR_OB_ORDER_FILLED));
                     }
                     OrderState::Cancelled => {
+                        warn!("order already cancelled: {:?}", order.order_state);
                         return Err(OrderBookErr::new(err_code::ERR_OB_ORDER_CANCELED));
                     }
                     _ => {
+                        warn!(
+                            "invalid order state for cancellation: {:?}",
+                            order.order_state
+                        );
                         return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
                     }
                 }
             }
             None => {
+                error!("order_id_mapper has no order_id={}", order_id);
                 return Err(OrderBookErr::new(err_code::ERR_OB_ORDER_NOT_FOUND));
             }
         }
@@ -673,6 +731,8 @@ impl OrderBookSnapshotHandler for OrderBook {
             bid_orders: self.bid_orders.take_queue_snapshot(),
             ask_orders: self.ask_orders.take_queue_snapshot(),
             id_manager: self.id_manager.clone(),
+            order_id_mapper: self.order_id_mapper.clone(),
+            last_price: self.last_price,
         })
     }
 
@@ -698,13 +758,14 @@ impl OrderBookSnapshotHandler for OrderBook {
         Ok(OrderBook {
             trade_pair: s.trade_pair,
             id_manager: s.id_manager,
-            order_id_to_orderbook_key: order_id_to_key,
+            order_id_mapper: order_id_to_key,
             bid_orders,
             ask_orders,
+            last_price: Decimal::ZERO,
         })
     }
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct OrderBookErr {
     err_code: i32,
 }
@@ -730,9 +791,7 @@ mod test {
     use rust_decimal::Decimal;
     use rust_decimal::prelude::FromPrimitive;
     use rust_decimal_macros::dec;
-    use tte_core::types::{
-        Direction, Order, OrderID, OrderState, OrderType, TimeInForce, TradePair,
-    };
+    use tte_core::types::{Direction, Order, OrderState, OrderType, TimeInForce, TradePair};
 
     fn post_limit_order(
         ob: &mut OrderBook,
@@ -744,11 +803,14 @@ mod test {
         let prev_trade_id = ob.id_manager.trade_id;
         let trade_id = prev_trade_id + 1;
 
+        let client_order_id = format!("CLI_{}_{}", account_id, trade_id);
+        let order_id = format!("ORD_{}_{}", account_id, trade_id);
+
         let order = Order {
-            client_order_id: String::new(),
+            client_order_id,
             post_only: true, // essential
             account_id: account_id,
-            order_id: OrderID::new(),
+            order_id,
             trade_id: trade_id,
             prev_trade_id: prev_trade_id,
             direction: direction,
@@ -760,21 +822,28 @@ mod test {
                 base: "BTC".to_string(),
                 quote: "USD".to_string(),
             },
+            stp_strategy: tte_core::pbcode::oms::StpStrategy::CancelTaker,
+            create_time: chrono::Utc::now().timestamp_micros() as u64,
+            version: 0,
         };
         _ = ob.place_order(order)
     }
 
-    fn add_limit_order(
+    fn match_limit_order(
         ob: &mut OrderBook,
         account_id: u64,
         direction: Direction,
         price: f64,
         qty: f64,
     ) -> Result<MatchResult, OrderBookErr> {
+        let prev_trade_id = ob.id_manager.trade_id;
+        let trade_id = prev_trade_id + 1;
+        let client_order_id = format!("CLI_{}_{}", account_id, trade_id);
+        let order_id = format!("ORD_{}_{}", account_id, trade_id);
         let order = Order {
-            client_order_id: String::new(),
+            client_order_id,
             post_only: false,
-            order_id: OrderID::new(),
+            order_id,
             account_id: account_id,
             trade_id: ob.id_manager.trade_id + 1,
             prev_trade_id: ob.id_manager.trade_id,
@@ -787,6 +856,9 @@ mod test {
                 base: "BTC".to_string(),
                 quote: "USD".to_string(),
             },
+            stp_strategy: tte_core::pbcode::oms::StpStrategy::CancelTaker,
+            create_time: chrono::Utc::now().timestamp_micros() as u64,
+            version: 0,
         };
         ob.place_order(order)
     }
@@ -795,23 +867,46 @@ mod test {
     fn test_key_ext() {
         let k1 = KeyExt::Bid(OrderBookKey {
             price: Decimal::from_f64(101.0).unwrap(),
-            seq_id: 1,
+            trade_id: 1,
         });
         let k2 = KeyExt::Bid(OrderBookKey {
             price: Decimal::from_f64(100.0).unwrap(),
-            seq_id: 2,
+            trade_id: 2,
         });
         assert!(k1 < k2);
 
         let k3 = KeyExt::Ask(OrderBookKey {
             price: Decimal::from_f64(100.0).unwrap(),
-            seq_id: 1,
+            trade_id: 1,
         });
         let k4 = KeyExt::Ask(OrderBookKey {
             price: Decimal::from_f64(101.0).unwrap(),
-            seq_id: 2,
+            trade_id: 2,
         });
         assert!(k3 < k4);
+    }
+
+    #[test]
+    fn test_limit_no_fill() {
+        // OMS:Bid,1001,CLI_1001_00101,LIMIT,BTC_USD,10050.00,0.5,GTK,1,false
+        // OMS:Ask,1002,CLI_1002_00101,LIMIT,BTC_USD,10060.00,0.5,GTK,1,false
+        // Bid-Ask <0, 不成交
+
+        let mut ob = OrderBook::new(TradePair::new("BTC", "USD"));
+        let r = match_limit_order(&mut ob, 1001, Direction::Buy, 10050.0, 0.5).unwrap();
+        assert_eq!(r.fill_result.as_ref().unwrap().results.len(), 0);
+        assert_eq!(r.fill_result.as_ref().unwrap().order_state, OrderState::New);
+
+        let r2 = match_limit_order(&mut ob, 1002, Direction::Sell, 10060.0, 0.5).unwrap();
+        assert_eq!(r2.fill_result.as_ref().unwrap().results.len(), 0);
+        assert_eq!(
+            r2.fill_result.as_ref().unwrap().order_state,
+            OrderState::New
+        );
+
+        // 订单还在订单簿中
+        assert!(ob.bid_orders.peek().is_some());
+        assert!(ob.ask_orders.peek().is_some());
     }
 
     #[test]
@@ -824,7 +919,7 @@ mod test {
         post_limit_order(&mut ob, 1001, Direction::Sell, 100.0, 10.0);
         post_limit_order(&mut ob, 1002, Direction::Sell, 101.0, 5.0);
         post_limit_order(&mut ob, 1003, Direction::Sell, 102.0, 20.0);
-        let result = add_limit_order(&mut ob, 1004, Direction::Buy, 102.0, 30.0)
+        let result = match_limit_order(&mut ob, 1004, Direction::Buy, 102.0, 30.0)
             .unwrap()
             .fill_result
             .unwrap();
@@ -841,6 +936,13 @@ mod test {
         assert_eq!(peek.qty_info.remain_qty, Decimal::from_f64(5.0).unwrap());
 
         assert_eq!(result.order_state, OrderState::Filled);
+
+        // 成交后order_id_mapper中无该订单
+        assert!(
+            ob.order_id_mapper
+                .get(&result.original_order.order_id)
+                .is_none()
+        );
     }
 
     #[test]
@@ -854,7 +956,7 @@ mod test {
         post_limit_order(&mut ob, 1001, Direction::Sell, 100.0, 10.0);
         post_limit_order(&mut ob, 1002, Direction::Sell, 101.0, 5.0);
         post_limit_order(&mut ob, 1003, Direction::Sell, 102.0, 20.0);
-        let result = add_limit_order(&mut ob, 1004, Direction::Buy, 101.0, 30.0)
+        let result = match_limit_order(&mut ob, 1004, Direction::Buy, 101.0, 30.0)
             .unwrap()
             .fill_result
             .unwrap();
@@ -882,6 +984,14 @@ mod test {
             Decimal::from_f64(15.0).unwrap(),
         );
         assert_eq!(bid_peek.order_state, OrderState::PartiallyFilled);
+
+        // 未完全成交的订单仍在
+        assert!(
+            ob.order_id_mapper
+                .get(&result.original_order.order_id)
+                .is_some()
+        );
+        assert!(ob.order_id_mapper.get(&bid_peek.order.order_id).is_some());
     }
 
     #[test]
@@ -894,7 +1004,7 @@ mod test {
         post_limit_order(&mut ob, 1001, Direction::Buy, 102.0, 10.0);
         post_limit_order(&mut ob, 1002, Direction::Buy, 101.0, 5.0);
         post_limit_order(&mut ob, 1003, Direction::Buy, 100.0, 20.0);
-        let result = add_limit_order(&mut ob, 1004, Direction::Sell, 100.0, 30.0)
+        let result = match_limit_order(&mut ob, 1004, Direction::Sell, 100.0, 30.0)
             .unwrap()
             .fill_result
             .unwrap();
@@ -923,7 +1033,7 @@ mod test {
         post_limit_order(&mut ob, 1001, Direction::Buy, 102.0, 10.0);
         post_limit_order(&mut ob, 1002, Direction::Buy, 101.0, 5.0);
         post_limit_order(&mut ob, 1003, Direction::Buy, 100.0, 20.0);
-        let result = add_limit_order(&mut ob, 1004, Direction::Sell, 101.0, 30.0)
+        let result = match_limit_order(&mut ob, 1004, Direction::Sell, 101.0, 30.0)
             .unwrap()
             .fill_result
             .unwrap();
@@ -956,7 +1066,7 @@ mod test {
         // match:(100, 5.0)
         // bid_q_new: (100.0, 18.0)
         // ask_q_new: (101.0,15.0)
-        let result2 = add_limit_order(&mut ob, 1005, Direction::Sell, 100.0, 2.0)
+        let result2 = match_limit_order(&mut ob, 1005, Direction::Sell, 100.0, 2.0)
             .unwrap()
             .fill_result
             .unwrap();

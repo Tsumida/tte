@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::pbcode::oms as pb;
-use getset::Getters;
+use crate::pbcode::oms::{self as pb, StpStrategy};
+use getset::{Getters, Setters};
 use prost::Message;
 use rust_decimal::Decimal;
 
@@ -18,6 +18,18 @@ impl TradePair {
     pub fn pair(&self) -> String {
         format!("{}{}", self.base, self.quote)
     }
+
+    // BTC_USDT
+    pub fn from_str(s: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let parts: Vec<&str> = s.split('_').collect(); // BASE_QUOTE
+        if parts.len() != 2 {
+            return Err("Invalid TradePair format".into());
+        }
+        Ok(TradePair {
+            base: parts[0].to_string(),
+            quote: parts[1].to_string(),
+        })
+    }
 }
 
 impl ToString for TradePair {
@@ -28,7 +40,6 @@ impl ToString for TradePair {
 
 pub type OrderID = String;
 pub type ClientOrderID = String;
-pub type SeqID = u64;
 pub type MatchID = u64;
 pub type Symbol = String; // USD, BTC, ETH
 pub type Direction = pb::Direction;
@@ -63,9 +74,9 @@ pub struct Order {
     #[getset(get = "pub")]
     pub client_order_id: ClientOrderID,
     #[getset(get = "pub")]
-    pub trade_id: SeqID,
+    pub trade_id: u64,
     #[getset(get = "pub")]
-    pub prev_trade_id: SeqID,
+    pub prev_trade_id: u64,
     #[getset(get = "pub")]
     pub time_in_force: TimeInForce,
     #[getset(get = "pub")]
@@ -80,6 +91,12 @@ pub struct Order {
     pub post_only: bool, // post only
     #[getset(get = "pub")]
     pub trade_pair: TradePair,
+    #[getset(get = "pub")]
+    pub stp_strategy: StpStrategy,
+    #[getset(get = "pub")]
+    pub create_time: u64,
+    #[getset(get = "pub")]
+    pub version: u64,
 }
 
 impl Into<pb::Order> for Order {
@@ -97,8 +114,9 @@ impl Into<pb::Order> for Order {
             post_only: self.post_only,
             trade_pair: Some(self.trade_pair.into()),
             quantity: self.target_qty.to_string(),
-            create_time: "".to_string(), // TODO
-            stp_strategy: 0,             // TODO
+            create_time: self.create_time,
+            stp_strategy: self.stp_strategy as i32,
+            version: self.version,
         }
     }
 }
@@ -114,19 +132,22 @@ impl Order {
             trade_id: om_order.trade_id,
             prev_trade_id: om_order.prev_trade_id,
             time_in_force: pb::TimeInForce::from_i32(om_order.time_in_force)
-                .unwrap_or(pb::TimeInForce::Gtk),
-            order_type: pb::OrderType::from_i32(om_order.order_type)
-                .unwrap_or(pb::OrderType::Limit),
-            direction: pb::Direction::from_i32(om_order.direction).unwrap_or(pb::Direction::Buy),
+                .ok_or("invalid time_in_force")?,
+            order_type: pb::OrderType::from_i32(om_order.order_type).ok_or("invalid order_type")?,
+            direction: pb::Direction::from_i32(om_order.direction).ok_or("invalid direction")?,
             price,
             target_qty: quantity,
             post_only: om_order.post_only,
-            trade_pair: om_order.trade_pair.unwrap(),
+            trade_pair: om_order.trade_pair.ok_or("missing trade pair")?.into(),
+            stp_strategy: pb::StpStrategy::from_i32(om_order.stp_strategy)
+                .ok_or("invalid stp_strategy")?,
+            create_time: om_order.create_time,
+            version: om_order.version,
         })
     }
 }
 
-#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Getters, Setters, serde::Serialize, serde::Deserialize)]
 pub struct OrderDetail {
     #[getset(get = "pub")]
     original: Order,
@@ -135,13 +156,13 @@ pub struct OrderDetail {
     #[getset(get = "pub", set = "pub")]
     filled_qty: Decimal,
     #[getset(get = "pub", set = "pub")]
-    last_trade_id: SeqID,
+    last_trade_id: u64,
     #[getset(get = "pub", set = "pub")]
     update_time: u64,
 }
 
 impl OrderDetail {
-    pub fn new(order: Order) -> Self {
+    pub fn place_order(order: Order) -> Self {
         OrderDetail {
             original: order,
             current_state: OrderState::New,
@@ -150,9 +171,12 @@ impl OrderDetail {
             update_time: 0,
         }
     }
+
+    pub fn advance_version(&mut self) {
+        self.original.version += 1;
+    }
 }
 
-// from arena ?
 impl Into<pb::OrderDetail> for &OrderDetail {
     fn into(self) -> pb::OrderDetail {
         pb::OrderDetail {
@@ -166,7 +190,7 @@ impl Into<pb::OrderDetail> for &OrderDetail {
 }
 
 // 撮合结果结构体
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FillRecord {
     // pub seq_id: SeqID,
     // pub prev_seq_id: SeqID,
@@ -186,28 +210,28 @@ pub struct FillRecord {
     pub trade_pair: TradePair,
 }
 
-impl From<&pb::FillRecord> for FillRecord {
-    fn from(mr: &pb::FillRecord) -> Self {
-        FillRecord {
+impl FillRecord {
+    pub fn from_pb(mr: &pb::FillRecord) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(FillRecord {
             match_id: mr.match_id,
             prev_match_id: mr.prev_match_id,
-            price: Decimal::from_str_exact(&mr.price).unwrap_or(Decimal::new(0, 0)),
-            qty: Decimal::from_str_exact(&mr.quantity).unwrap_or(Decimal::new(0, 0)),
-            direction: pb::Direction::from_i32(mr.direction).unwrap_or(pb::Direction::Buy),
+            price: Decimal::from_str_exact(&mr.price)?,
+            qty: Decimal::from_str_exact(&mr.quantity)?,
+            direction: pb::Direction::from_i32(mr.direction).ok_or("unknown direction")?,
             taker_order_id: mr.taker_order_id.clone(),
             taker_account_id: mr.taker_account_id,
-            taker_state: pb::OrderState::from_i32(mr.taker_state).unwrap_or(pb::OrderState::New),
+            taker_state: pb::OrderState::from_i32(mr.taker_state).ok_or("unknown order state")?,
             maker_order_id: mr.maker_order_id.clone(),
             maker_account_id: mr.maker_account_id,
-            maker_state: pb::OrderState::from_i32(mr.maker_state).unwrap_or(pb::OrderState::New),
+            maker_state: pb::OrderState::from_i32(mr.maker_state).ok_or("unknown order state")?,
             is_taker_fulfilled: mr.is_taker_fulfilled,
             is_maker_fulfilled: mr.is_maker_fulfilled,
-            trade_pair: mr.trade_pair.clone().unwrap(),
-        }
+            trade_pair: mr.trade_pair.clone().ok_or("missing trade pair")?.into(),
+        })
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MatchResult {
     pub action: pb::BizAction,
     pub fill_result: Option<FillOrderResult>, // Some(_) if action == FillOrder
@@ -297,7 +321,7 @@ impl MatchResult {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FillOrderResult {
     pub original_order: Order,
     pub trade_pair: TradePair,
@@ -306,7 +330,7 @@ pub struct FillOrderResult {
     pub total_filled_qty: Decimal,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CancelOrderResult {
     pub is_cancel_success: bool,
     pub err_msg: Option<String>,
@@ -317,20 +341,18 @@ pub struct CancelOrderResult {
     pub order_state: OrderState,
 }
 
-impl From<&pb::CancelResult> for CancelOrderResult {
-    fn from(cr: &pb::CancelResult) -> Self {
-        CancelOrderResult {
+impl CancelOrderResult {
+    pub fn from_pb(cr: &pb::CancelResult) -> Result<Self, Box<dyn std::error::Error>> {
+        let trade_pair = cr.trade_pair.as_ref().ok_or("missing trade pair")?;
+        Ok(CancelOrderResult {
             is_cancel_success: cr.order_state == pb::OrderState::Cancelled as i32,
             err_msg: None,
-            trade_pair: TradePair::new(
-                &cr.trade_pair.as_ref().unwrap().base,
-                &cr.trade_pair.as_ref().unwrap().quote,
-            ),
-            direction: pb::Direction::from_i32(cr.direction).unwrap_or(pb::Direction::Buy),
+            trade_pair: TradePair::new(&trade_pair.base, &trade_pair.quote),
+            direction: pb::Direction::from_i32(cr.direction).ok_or("unknown direction")?,
             order_id: cr.order_id.clone(),
             account_id: cr.account_id,
-            order_state: pb::OrderState::from_i32(cr.order_state).unwrap_or(pb::OrderState::New),
-        }
+            order_state: pb::OrderState::from_i32(cr.order_state).ok_or("unknown order state")?,
+        })
     }
 }
 
@@ -365,5 +387,29 @@ impl BatchMatchResultTransfer {
 
     pub fn deserialize(data: &[u8]) -> Result<pb::BatchMatchResult, prost::DecodeError> {
         pb::BatchMatchResult::decode(data)
+    }
+}
+
+pub fn order_event_from_detail(order_detail: &OrderDetail) -> pb::OrderEvent {
+    let original = order_detail.original();
+    pb::OrderEvent {
+        account_id: *original.account_id(),
+        order_id: original.order_id().to_string(),
+        trade_id: order_detail.last_trade_id().clone(),
+        prev_trade_id: original.prev_trade_id().clone(),
+        base: original.trade_pair.base.clone(),
+        quote: original.trade_pair.quote.clone(),
+        direction: original.direction as i32,
+        price: original.price().to_string(),
+        target_qty: original.target_qty().to_string(),
+        filled_qty: order_detail.filled_qty().to_string(),
+        order_state: order_detail.current_state as i32,
+        client_order_id: original.client_order_id().clone(),
+        tx_time: order_detail.update_time,
+        order_type: original.order_type.as_str_name().to_string(),
+        post_only: original.post_only,
+        stp_strategy: original.stp_strategy.as_str_name().to_string(),
+        create_time: original.create_time,
+        time_in_force: original.time_in_force.as_str_name().to_string(),
     }
 }

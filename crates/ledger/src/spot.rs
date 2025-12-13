@@ -1,18 +1,14 @@
-//!
-//!
-//!
-
-// allow dead code for incomplete implementation
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
 
+use getset::Getters;
 use rust_decimal::Decimal;
 
 use tte_core::{
     err_code::{self, ERR_INPOSSIBLE_STATE, TradeEngineErr},
-    pbcode::oms::BizAction,
-    types::{CancelOrderResult, Direction, FillRecord, Order, SeqID, Symbol},
+    pbcode::oms::{BalanceEvent, BizAction},
+    types::{CancelOrderResult, Direction, FillRecord, Order, Symbol},
 };
 
 pub trait SpotLedgerRPCHandler {
@@ -63,8 +59,9 @@ impl Spot {
 }
 
 // 单账户的币种余额变动流水
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Getters)]
 pub struct SpotChangeResult {
+    #[getset(get = "pub")]
     is_action_success: bool,
     action_failed_err: Option<String>,
     spot_id: u64,
@@ -73,6 +70,23 @@ pub struct SpotChangeResult {
     spot_after: Spot,
     // transfer_frozen_receipts_snapshot: Vec<(String, FrozenReceipt)>, // 主要是debug
 }
+
+impl SpotChangeResult {
+    pub fn to_balance_event(&self) -> Option<BalanceEvent> {
+        if !self.is_action_success {
+            return None;
+        }
+        Some(BalanceEvent {
+            account_id: self.spot_after.account_id,
+            currency: self.spot_after.currency.clone(),
+            deposit: self.spot_after.deposit.to_string(),
+            frozen: self.spot_after.frozen.to_string(),
+            balance: (self.spot_after.deposit - self.spot_after.frozen).to_string(),
+            update_time: self.spot_after.update_time,
+        })
+    }
+}
+
 // 记录单次流程中的冻结额度，主要用于整体释放。
 // 场景：限价单撤单时要按orderID释放整个冻结额度
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -170,14 +184,14 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
         if let Some(receipt) = &mut self.frozen_receipt {
             if receipt.remain_frozen < amount {
                 return Err(SpotLedgerErr::new(
-                    err_code::ERR_OMS_PRICE_OUT_OF_RANGE,
+                    err_code::ERR_LEDGER_INSUFFICIENT_FROZEN,
                     "Release amount exceeds remaining frozen amount",
                 ));
             }
             let spot = self.spot.as_mut().unwrap();
             if spot.frozen < amount {
                 return Err(SpotLedgerErr::new(
-                    err_code::ERR_INPOSSIBLE_STATE,
+                    err_code::ERR_LEDGER_INSUFFICIENT_FROZEN,
                     "Insufficient frozen amount to release",
                 ));
             }
@@ -213,7 +227,7 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
 pub struct SpotLedger {
     spots: BTreeMap<u64, BTreeMap<Symbol, Spot>>, // account_id -> currency -> Spot
     order_frozen_receipts: BTreeMap<String, FrozenReceipt>, // frozen_id -> FrozenReceipt
-    last_seq_id: SeqID,
+    last_seq_id: u64,
     last_spot_id: u64, // 目前是sequencer commit后串行调用， 因此一个spot_id足够
 }
 
@@ -273,7 +287,8 @@ impl SpotLedger {
     ) -> SingleCurrencyTx {
         SingleCurrencyTx {
             spot_id: self.current_spot_id(),
-            spot: self.get_spot(account_id, currency).cloned(),
+            // 对于首次更新的spot，直接创建默认spot; 否则commit (None, None)会失败
+            spot: Some(self.get_spot_or_default(account_id, currency)),
             frozen_receipt: self.get_frozen_receipt(frozen_id).cloned(),
         }
     }
@@ -425,18 +440,34 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
                 // maker: BTC-1，USD+10000, BTC_FROZEN-1
                 taker_base_tx.add_deposit(match_result.qty)?;
                 taker_quote_tx.sub_deposit(match_result.price * match_result.qty)?;
-                taker_quote_tx.release_frozen(match_result.price * match_result.qty)?;
+                if match_result.is_taker_fulfilled {
+                    taker_quote_tx.release_all()?;
+                } else {
+                    taker_quote_tx.release_frozen(match_result.price * match_result.qty)?;
+                }
                 maker_base_tx.sub_deposit(match_result.qty)?;
                 maker_quote_tx.add_deposit(match_result.price * match_result.qty)?;
-                maker_base_tx.release_frozen(match_result.qty)?;
+                if match_result.is_maker_fulfilled {
+                    maker_base_tx.release_all()?;
+                } else {
+                    maker_base_tx.release_frozen(match_result.qty)?;
+                }
             }
             Direction::Sell => {
                 taker_base_tx.sub_deposit(match_result.qty)?;
-                taker_base_tx.release_frozen(match_result.qty)?;
                 taker_quote_tx.add_deposit(match_result.price * match_result.qty)?;
+                if match_result.is_taker_fulfilled {
+                    taker_base_tx.release_all()?;
+                } else {
+                    taker_base_tx.release_frozen(match_result.qty)?;
+                }
                 maker_base_tx.add_deposit(match_result.qty)?;
                 maker_quote_tx.sub_deposit(match_result.price * match_result.qty)?;
-                maker_quote_tx.release_frozen(match_result.price * match_result.qty)?;
+                if match_result.is_maker_fulfilled {
+                    maker_quote_tx.release_all()?;
+                } else {
+                    maker_quote_tx.release_frozen(match_result.price * match_result.qty)?;
+                }
             }
             _ => Err(SpotLedgerErr::new(
                 err_code::ERR_INPOSSIBLE_STATE,
@@ -504,7 +535,7 @@ impl SpotLedgerRPCHandler for SpotLedger {
         };
         let before = SingleCurrencyTx {
             spot_id: spot_id,
-            spot: self.get_spot(order.account_id, currency).cloned(),
+            spot: Some(self.get_spot_or_default(order.account_id, currency)),
             frozen_receipt: None,
         };
         let mut tx = before.clone();
@@ -560,22 +591,23 @@ mod tests {
     fn test_place_order() {
         let mut ledger = SpotLedger::new();
         add_balance(&mut ledger, 1001, "BTC", 1.0);
-        add_balance(&mut ledger, 1001, "USD", 10000.0);
-        add_balance(&mut ledger, 1001, "USD", 2000.0);
+        add_balance(&mut ledger, 1001, "USDT", 10000.0);
+        add_balance(&mut ledger, 1001, "USDT", 2000.0);
 
         let balance = ledger.get_all_balances(1001);
         assert!(
             balance.get(&"BTC".to_string()).unwrap().deposit == Decimal::from_f64(1.0).unwrap()
         );
         assert!(
-            balance.get(&"USD".to_string()).unwrap().deposit == Decimal::from_f64(12000.0).unwrap()
+            balance.get(&"USDT".to_string()).unwrap().deposit
+                == Decimal::from_f64(12000.0).unwrap()
         );
     }
 
     #[test]
 
     fn test_fill() {
-        // 模拟1001, 1002两个订单完全成交
+        // 模拟1001, 1002, 1003两个订单完全成交
         // 1002: 初始状态(BTC_deposit=1, frozen=0), 执行：以10000*0.3价格卖出1个BTC, 以9800*0.5价格卖出0.2个BTC
         // 1001：初始状态(USDT_deposit=10000, frozen=0), 执行以10000*0.5价格买入1个BTC
         let mut ledger = SpotLedger::new();
@@ -600,8 +632,8 @@ mod tests {
         }
 
         let match_records = [
-            testkit::fill_buy_limit_order(&orders[0], &orders[1], dec!(0.3)),
-            testkit::fill_buy_limit_order(&orders[0], &orders[2], dec!(0.2)),
+            testkit::fullfill_both(&orders[0], &orders[1], dec!(0.3)),
+            testkit::fullfill_both(&orders[0], &orders[2], dec!(0.2)),
         ];
 
         for match_record in match_records.into_iter() {
@@ -616,18 +648,13 @@ mod tests {
         println!("Balance 1001: {:?}", balance_1001);
         println!("Balance 1002: {:?}", balance_1002);
 
-        assert!(
-            balance_1001.get(&"USDT".to_string()).unwrap().deposit
-                == Decimal::from_f64(5040.0).unwrap()
-        );
-        assert!(
-            balance_1001.get(&"BTC".to_string()).unwrap().deposit
-                == Decimal::from_f64(0.5).unwrap()
-        );
-        assert!(
-            balance_1002.get(&"BTC".to_string()).unwrap().deposit
-                == Decimal::from_f64(1.0 - 0.3 - 0.2).unwrap()
-        );
+        assert!(balance_1001.get(&"USDT".to_string()).unwrap().deposit == dec![5040.0]);
+        assert!(balance_1001.get(&"BTC".to_string()).unwrap().deposit == dec![0.5]);
+        assert!(balance_1002.get(&"BTC".to_string()).unwrap().deposit == dec![0.5]);
+
+        // frozen必须被完全释放
+        assert!(balance_1001.get(&"USDT".to_string()).unwrap().frozen == Decimal::ZERO);
+        assert!(balance_1002.get(&"BTC".to_string()).unwrap().frozen == Decimal::ZERO);
     }
 
     #[test]
@@ -700,6 +727,6 @@ mod tests {
         println!("Balance 1001 after cancel: {:?}", balance_1001_after);
         assert!(balance_1001_after.get(&"USDT".to_string()).unwrap().deposit == dec!(7000.0));
         assert!(balance_1001_after.get(&"BTC".to_string()).unwrap().deposit == dec!(0.3));
-        assert!(balance_1001_after.get(&"USDT".to_string()).unwrap().frozen == Decimal::ZERO);
+        assert!(balance_1001_after.get(&"USDT".to_string()).unwrap().frozen == Decimal::ZERO); // 完全释放
     }
 }

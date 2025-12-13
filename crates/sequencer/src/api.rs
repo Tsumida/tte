@@ -1,14 +1,26 @@
 #![allow(dead_code)]
 use std::sync::atomic::AtomicU64;
 
+use chrono::Utc;
 use tokio::sync::mpsc;
 // use tokio::sync::oneshot;
+use crate::error::SequencerErr;
 use tonic::async_trait;
 
-use crate::error::SequencerErr;
+// 微秒级时间戳
+fn now_us() -> u64 {
+    let now = Utc::now();
+    let sec = now.timestamp(); // 秒
+    let micros = now.timestamp_subsec_micros(); // 微秒部分
+
+    (sec as u64) * 1_000_000 + (micros as u64)
+}
 
 pub trait SequenceSetter {
     fn set_seq_id(&mut self, seq_id: u64, prev_seq_id: u64);
+
+    // 微秒时间戳
+    fn set_ts(&mut self, ts: u64);
 }
 
 #[async_trait]
@@ -73,6 +85,7 @@ where
             let prev_seq_id = self.get_seq_id();
             let seq_id = self.advance_seq_id();
             cmd.set_seq_id(seq_id, prev_seq_id);
+            cmd.set_ts(now_us());
             tracing::info!(
                 "sequencer: received cmd, seq_id={}, prev_seq_id={}",
                 seq_id,

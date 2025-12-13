@@ -1,10 +1,11 @@
 #![allow(dead_code)]
 
 use rust_decimal::Decimal;
-
 use tte_core::pbcode::oms::BizAction;
-
+use tte_core::pbcode::oms::StpStrategy;
 use tte_core::types::*; // 假设你上面的结构体定义放在 types.rs
+
+use chrono;
 
 /// 模拟下单
 pub fn new_limit_order(
@@ -30,6 +31,9 @@ pub fn new_limit_order(
             base: "BTC".to_string(),
             quote: "USDT".to_string(),
         },
+        create_time: chrono::Utc::now().timestamp_micros() as u64,
+        stp_strategy: StpStrategy::CancelTaker,
+        version: 0,
     }
 }
 
@@ -53,6 +57,43 @@ pub fn fill_buy_limit_order(buy: &Order, sell: &Order, qty: Decimal) -> MatchRes
         maker_state: OrderState::PartiallyFilled,
         is_taker_fulfilled: false,
         is_maker_fulfilled: false,
+        trade_pair: symbol.clone(),
+    });
+
+    let fill_result = FillOrderResult {
+        original_order: buy.clone(),
+        trade_pair: symbol.clone(),
+        results: match_records,
+        order_state: OrderState::Filled,
+        total_filled_qty: qty,
+    };
+
+    MatchResult {
+        action: BizAction::FillOrder,
+        fill_result: Some(fill_result),
+        cancel_result: None,
+    }
+}
+
+pub fn fullfill_both(buy: &Order, sell: &Order, qty: Decimal) -> MatchResult {
+    let symbol = buy.trade_pair.clone();
+    let mut match_records = vec![];
+
+    // 第一次成交 0.5 BTC
+    match_records.push(FillRecord {
+        match_id: 1,
+        prev_match_id: 0,
+        price: sell.price,
+        qty: qty,
+        direction: Direction::Buy,
+        taker_order_id: buy.order_id.clone(),
+        taker_account_id: buy.account_id,
+        taker_state: OrderState::Filled,
+        maker_order_id: sell.order_id.clone(),
+        maker_account_id: sell.account_id,
+        maker_state: OrderState::Filled,
+        is_taker_fulfilled: true,
+        is_maker_fulfilled: true,
         trade_pair: symbol.clone(),
     });
 
