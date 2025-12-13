@@ -1,0 +1,32 @@
+name: Rust Unit Tests (Make UT)
+
+on:
+  push:
+    branches:
+      - main
+  
+  pull_request:
+    branches:
+      - main
+  
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: ⬇️ Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 📦 Install Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        
+    - name: ⚙️ Build/Cache Dependencies
+      uses: actions-rs/cargo@v1
+      with:
+        command: check
+      
+    - name: 🧪 Run Unit Tests (make ut)
+      run: make ut
