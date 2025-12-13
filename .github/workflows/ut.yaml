@@ -22,7 +22,13 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-        
+    
+    - name: 🔨 Install Protobuf Compiler (protoc)
+      run: |
+        # 使用 apt-get 安装 protobuf-compiler
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+
     - name: ⚙️ Build/Cache Dependencies
       uses: actions-rs/cargo@v1
       with:
