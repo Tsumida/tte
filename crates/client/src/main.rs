@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
@@ -32,11 +33,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let oms_client = oms_service_client::OmsServiceClient::connect(format!("http://[::1]:8080"))
         .await
         .expect("init oms client failed");
-    let me_client = match_engine_service_client::MatchEngineServiceClient::connect(format!(
-        "http://[::1]:8081"
-    ))
+
+    let me_client_btc_usdt = match_engine_service_client::MatchEngineServiceClient::connect(
+        format!("http://[::1]:8081"),
+    )
     .await
     .expect("init me client failed");
+
+    let me_client_eth_usdt = match_engine_service_client::MatchEngineServiceClient::connect(
+        format!("http://[::1]:18081"),
+    )
+    .await
+    .expect("init me client failed");
+
+    let mut me_clients = {
+        let mut map = HashMap::new();
+        map.insert("BTC_USDT".to_string(), me_client_btc_usdt);
+        map.insert("ETH_USDT".to_string(), me_client_eth_usdt);
+        map
+    };
 
     // 确定输入源：文件或标准输入
     let reader: Box<dyn BufRead> = match args.file_path {
@@ -58,12 +73,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let mut oms_client_clone = oms_client.clone();
-        let mut me_client_clone = me_client.clone();
         let command = l.trim().to_string(); // 拷贝指令字符串
 
         // 创建异步任务并存储句柄
 
         match true {
+            // ignore comments
+            _ if command.starts_with("//") => {}
             _ if command.starts_with("OMS:Bid") || command.starts_with("OMS:Ask") => {
                 match place_order(command[4..].to_string(), &mut oms_client_clone).await {
                     Ok(_) => tracing::info!("OMS command processed successfully: {}", command),
@@ -91,7 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             _ if command.starts_with("ME:") => {
-                match send_me_admin_cmd(command[3..].to_string(), &mut me_client_clone).await {
+                // ME:Snapshot,BTC_USDT
+                let args: Vec<&str> = command[3..].split(',').collect();
+                let market = args[1];
+                let client = me_clients.get_mut(market).unwrap();
+                match send_me_admin_cmd(command[3..].to_string(), client).await {
                     Ok(_) => {
                         tracing::info!("ME command processed successfully: {}", command)
                     }
