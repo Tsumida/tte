@@ -57,7 +57,7 @@ impl Spot {
 }
 
 // 单账户的币种余额变动流水
-#[derive(Debug, Clone, Getters)]
+#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
 pub struct SpotChangeResult {
     #[getset(get = "pub")]
     is_action_success: bool,

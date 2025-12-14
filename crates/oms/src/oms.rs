@@ -86,6 +86,8 @@ pub struct IDManager {
     ledger_id: u64,
     #[getset(get = "pub")]
     seq_id: u64,
+    #[getset(get = "pub")]
+    match_id_mapper: HashMap<String, u64>, // BTCUSDT -> last_match_id
 }
 
 impl IDManager {
@@ -107,6 +109,12 @@ impl IDManager {
     pub fn update_ledger_id(&mut self, seq_id: u64) -> u64 {
         self.ledger_id = max(self.ledger_id, seq_id);
         self.ledger_id
+    }
+
+    pub fn update_match_id(&mut self, pair: &TradePair, match_id: u64) -> u64 {
+        let last_id = self.match_id_mapper.entry(pair.to_string()).or_insert(0);
+        *last_id = max(*last_id, match_id);
+        *last_id
     }
 }
 
@@ -139,7 +147,7 @@ pub trait OMSMatchResultHandler {
     ) -> Result<OMSChangeResult, OMSErr>;
 }
 
-#[derive(Getters)]
+#[derive(Getters, serde::Serialize, serde::Deserialize)]
 pub struct OMSChangeResult {
     #[getset(get = "pub")]
     // 对账本的状态更新
@@ -416,7 +424,7 @@ impl OMS {
         if order_map.get(&order_id).is_none() {
             return Err(OMSErr::new(
                 err_code::ERR_OMS_ORDER_NOT_FOUND,
-                "Order not found",
+                "Filled order not found in order_map",
             ));
         }
 
@@ -512,40 +520,44 @@ impl OMS {
         }))
     }
 
+    // Transaction
     fn cancel_active_order(
         &mut self,
         direction: Direction,
         account_id: u64,
         order_id: &str,
         ts: u64,
-    ) -> Result<Vec<oms::OrderEvent>, OMSErr> {
-        if let Some(orders) = self.active_orders.get_mut(&account_id) {
-            let order_map = match direction {
-                Direction::Buy => &mut orders.bid_orders,
-                Direction::Sell => &mut orders.ask_orders,
-                _ => unreachable!(),
-            };
-            match order_map.remove(order_id) {
-                Some(mut canceled_order) => {
-                    canceled_order.advance_version();
-                    canceled_order.set_update_time(ts);
-                    canceled_order.set_current_state(oms::OrderState::Cancelled);
-                    let order_event = order_event_from_detail(&canceled_order);
-                    self.inactivate_order(account_id, canceled_order);
-                    return Ok(vec![order_event]);
-                }
-                None => {
-                    return Err(OMSErr::new(
-                        err_code::ERR_OMS_ORDER_NOT_FOUND,
-                        "Order not found",
-                    ));
-                }
-            }
-        }
-        Err(OMSErr::new(
-            err_code::ERR_OMS_ORDER_NOT_FOUND,
-            "Order not found",
-        ))
+    ) -> Result<Box<dyn FnOnce(&mut OMS) -> Vec<oms::OrderEvent>>, OMSErr> {
+        let orders = self.active_orders.get_mut(&account_id).ok_or_else(|| {
+            OMSErr::new(
+                err_code::ERR_OMS_ORDER_NOT_FOUND,
+                "Account not found in active orders",
+            )
+        })?;
+
+        let order_map = match direction {
+            Direction::Buy => &mut orders.bid_orders,
+            Direction::Sell => &mut orders.ask_orders,
+            _ => unreachable!(),
+        };
+        let mut canceled_order = order_map
+            .get(order_id)
+            .ok_or_else(|| {
+                OMSErr::new(
+                    err_code::ERR_OMS_ORDER_NOT_FOUND,
+                    "Order not found in bid/ask orders",
+                )
+            })?
+            .clone();
+
+        Ok(Box::new(move |oms: &mut OMS| {
+            canceled_order.advance_version();
+            canceled_order.set_update_time(ts);
+            canceled_order.set_current_state(oms::OrderState::Cancelled);
+            let order_event = order_event_from_detail(&canceled_order);
+            oms.inactivate_order(account_id, canceled_order);
+            vec![order_event]
+        }))
     }
 }
 
@@ -711,7 +723,7 @@ impl OMSMatchResultHandler for OMS {
         })?;
         if result.order_state == OrderState::Cancelled as i32 {
             // 更新订单状态
-            let order_event = self.cancel_active_order(
+            let order_commit = self.cancel_active_order(
                 record.direction,
                 record.account_id,
                 &record.order_id,
@@ -732,7 +744,7 @@ impl OMSMatchResultHandler for OMS {
             // commit阶段
             return Ok(OMSChangeResult {
                 spot_change_result: vec![ledger_commit(&mut self.ledger)],
-                order_event,
+                order_event: order_commit(self),
                 match_request: None,
             });
         }
@@ -854,11 +866,12 @@ impl FeeCalculator {
 mod test {
     use super::*;
     use rust_decimal_macros::dec;
+    use tte_core::pbcode::oms::{PlaceOrderReq, TradePair};
 
-    #[test]
-    fn test_atomic_place_order() {
-        // Insufficent balance
-        // place_order with BTC=100, but ledger has only BTC=50
+    fn init_ledger_market() -> (
+        Vec<(u64, &'static str, f64)>,
+        Vec<(TradePair, Decimal, oms::TradePairConfig)>,
+    ) {
         let balances = vec![
             (1001, "USDT", 1_000_000.0),
             (1001, "BTC", 50.0),
@@ -888,6 +901,15 @@ mod test {
                 },
             ),
         ];
+        (balances, market_data)
+    }
+
+    #[test]
+    fn test_place_order_err_insufficient_balance() {
+        // Insufficent balance
+        // place_order with BTC=100, but ledger has only BTC=50
+        // Expectation: No balance changed, no active orders
+        let (balances, market_data) = init_ledger_market();
         let mut oms = OMS::new();
         oms.with_init_ledger(balances).with_market_data(market_data);
 
@@ -929,5 +951,54 @@ mod test {
         // expect: no active orders
         let account_orders = oms.active_orders.get(&1001);
         assert!(account_orders.is_none());
+    }
+
+    #[test]
+    fn test_place_order_ok() {
+        let (balances, market_data) = init_ledger_market();
+        let mut oms = OMS::new();
+        oms.with_init_ledger(balances).with_market_data(market_data);
+        let req = PlaceOrderReq {
+            order: Some(oms::Order {
+                order_id: "".to_string(),
+                trade_pair: Some(TradePair::new("ETH", "USDT")),
+                direction: Direction::Sell as i32,
+                time_in_force: TimeInForce::Gtk as i32,
+                order_type: OrderType::Market as i32,
+                price: "3999.00".to_string(),
+                quantity: "0.2000".to_string(),
+                create_time: 1765702254358148,
+                client_order_id: "CLI_1002_00010".to_string(),
+                stp_strategy: oms::StpStrategy::CancelTaker as i32,
+                account_id: 1001,
+                post_only: false,
+                trade_id: 0,
+                prev_trade_id: 0,
+                version: 1,
+            }),
+        };
+        let result = oms.handle_rpc_cmd(
+            1,
+            &TradePair::new("ETH", "USDT"),
+            oms::RpcCmd {
+                biz_action: BizAction::PlaceOrder as i32,
+                place_order_req: Some(req),
+                cancel_order_req: None,
+            },
+        );
+        assert!(result.is_ok());
+        let change_result = result.ok().unwrap();
+        println!(
+            "Change Result: {}",
+            serde_json::to_string_pretty(&change_result).unwrap()
+        );
+
+        // expect: balance changed
+        let eth_balance = oms.ledger.get_spot(1001, "ETH").unwrap();
+        assert_eq!(eth_balance.deposit(), &dec!(500.0));
+        assert_eq!(eth_balance.frozen(), &dec!(0.2000));
+        // expect: active orders
+        let account_orders = oms.active_orders.get(&1001).unwrap();
+        assert_eq!(account_orders.ask_orders.len(), 1);
     }
 }
