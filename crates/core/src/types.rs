@@ -413,3 +413,10 @@ pub fn order_event_from_detail(order_detail: &OrderDetail) -> pb::OrderEvent {
         time_in_force: original.time_in_force.as_str_name().to_string(),
     }
 }
+
+pub fn is_order_final(state: OrderState) -> bool {
+    match state {
+        OrderState::Cancelled | OrderState::Rejected | OrderState::Filled => true,
+        _ => false,
+    }
+}

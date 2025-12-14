@@ -553,17 +553,26 @@ impl OMS {
             Direction::Sell => &mut orders.ask_orders,
             _ => unreachable!(),
         };
-        let mut canceled_order = order_map
-            .get(order_id)
-            .ok_or_else(|| {
-                OMSErr::new(
-                    err_code::ERR_OMS_ORDER_NOT_FOUND,
-                    "Order not found in bid/ask orders",
-                )
-            })?
-            .clone();
 
+        if order_map.get(order_id).is_none() {
+            return Err(OMSErr::new(
+                err_code::ERR_OMS_ORDER_NOT_FOUND,
+                "Canceled order not found in order_map",
+            ));
+        }
+
+        let order_id = order_id.to_string();
         Ok(Box::new(move |oms: &mut OMS| {
+            let orders = oms
+                .active_orders
+                .get_mut(&account_id)
+                .expect("must get account orders");
+            let om = match direction {
+                Direction::Buy => &mut orders.bid_orders,
+                Direction::Sell => &mut orders.ask_orders,
+                _ => unreachable!(),
+            };
+            let mut canceled_order = om.remove(&order_id).expect("must get");
             canceled_order.advance_version();
             canceled_order.set_update_time(ts);
             canceled_order.set_current_state(oms::OrderState::Cancelled);
@@ -727,43 +736,40 @@ impl OMSMatchResultHandler for OMS {
         ts: u64,
         result: &oms::CancelResult,
     ) -> Result<OMSChangeResult, OMSErr> {
-        let record = CancelOrderResult::from_pb(result).map_err(|e| {
+        let cancel_result = CancelOrderResult::from_pb(result).map_err(|e| {
             error!("CancelOrderResult::from failed: {}", e);
             OMSErr::new(
                 err_code::ERR_OMS_MATCH_RESULT_FAILED,
                 "invalid cancel result",
             )
         })?;
-        if result.order_state == OrderState::Cancelled as i32 {
-            // 更新订单状态
+        if is_order_final(cancel_result.order_state) {
             let order_commit = self.cancel_active_order(
-                record.direction,
-                record.account_id,
-                &record.order_id,
+                cancel_result.direction,
+                cancel_result.account_id,
+                &cancel_result.order_id,
                 ts,
             )?;
 
-            let ledger_commit = self.ledger.cancel_order(&record).map_err(|e| {
-                error!(
-                    "cancel_order failed: account_id={}, order_id={}, err={}",
-                    record.account_id, record.order_id, e
-                );
+            let ledger_commit = self.ledger.cancel_order(&cancel_result).map_err(|e| {
+                tracing::error!("CancelOrderResult err={}", e);
                 OMSErr::new(
                     err_code::ERR_OMS_MATCH_RESULT_FAILED,
-                    "cancel_result processing failed",
+                    "cancel processing failed",
                 )
             })?;
 
-            // commit阶段
             return Ok(OMSChangeResult {
                 spot_change_result: vec![ledger_commit(&mut self.ledger)],
                 order_event: order_commit(self),
                 match_request: None,
             });
         }
+
+        // 对非预期的状态报警
         warn!(
-            "CancelResult with non-cancelled state: account_id={}, order_id={}, state={}",
-            record.account_id, record.order_id, result.order_state
+            "CancelResult with non-terminal state: {}",
+            result.order_state
         );
         Ok(OMSChangeResult::empty())
     }
