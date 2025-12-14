@@ -22,3 +22,5 @@ impl std::fmt::Display for OMSErr {
         write!(f, "OMSErr(code={})", self.code)
     }
 }
+
+impl std::error::Error for OMSErr {}

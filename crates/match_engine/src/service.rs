@@ -13,7 +13,7 @@ use tte_core::{
 };
 
 use crate::orderbook::{OrderBook, OrderBookErr, OrderBookSnapshot, OrderBookSnapshotHandler};
-use tte_infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
+use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
 use tte_sequencer::api::{DefaultSequencer, SequenceSetter};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -211,7 +211,6 @@ impl MatchReqConsumer {
                     break;
                 }
                 Ok(m) => {
-                    print_kafka_msg_meta(&m);
                     if let Some(payload) = m.payload() {
                         self.process_kafka_msg(payload).await;
                     }

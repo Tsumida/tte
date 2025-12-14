@@ -633,6 +633,7 @@ impl OrderBookRequestHandler for OrderBook {
         }
     }
 
+    // Atomic
     fn cancel_order(
         &mut self,
         order_id: OrderID,

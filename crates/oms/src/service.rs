@@ -13,11 +13,11 @@ use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, instrument, warn};
-use tte_core::pbcode::oms;
+use tte_core::pbcode::oms::{self, TradeCmd};
 use tte_core::precision;
 use tte_core::types::{BatchMatchResultTransfer, TradePair};
 use tte_core::{err_code, types};
-use tte_infra::kafka::{ConsumerConfig, ProducerConfig, print_kafka_msg_meta};
+use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
 use tte_sequencer::api::{DefaultSequencer, SequenceSetter};
 
 type InformSender = oneshot::Sender<Informer>;
@@ -548,6 +548,7 @@ impl ApplyThread {
                         let trade_pair = trade_cmd.trade_pair.as_ref().unwrap();
                         let mut oms = self.oms.write().await;
                         oms.id_manager.update_seq_id(cmd.seq_id);
+                        Self::print_trade_cmd(&trade_cmd);
                         match oms.handle_rpc_cmd(cmd.seq_id, trade_pair, trade_cmd.rpc_cmd.unwrap())
                         {
                             Ok(change_res) => {
@@ -583,9 +584,15 @@ impl ApplyThread {
                                 );
                                 continue;
                             }
-                            if let Err(e) =
-                                Self::handle_match_result(&mut oms, &mr, ts, &mut event_buffer)
-                                    .await
+
+                            if let Err(e) = Self::handle_match_result(
+                                &mut oms,
+                                batch_match_result.trade_pair.as_ref().unwrap(),
+                                &mr,
+                                ts,
+                                &mut event_buffer,
+                            )
+                            .await
                             {
                                 error!(
                                     "OMS match_result(trade_id={}, prev={}) invalid: {:?}",
@@ -621,6 +628,19 @@ impl ApplyThread {
         tracing::info!("ApplyThread stopped");
     }
 
+    fn print_trade_cmd(trade_cmd: &TradeCmd) {
+        debug!(
+            "Processing trade cmd: trade_id={}, prev_trade_id={}, action={:?}, payload={}",
+            trade_cmd.trade_id,
+            trade_cmd.prev_trade_id,
+            trade_cmd
+                .rpc_cmd
+                .as_ref()
+                .map(|c| oms::BizAction::from_i32(c.biz_action)),
+            serde_json::to_string(&trade_cmd).unwrap()
+        );
+    }
+
     fn collect_events(
         change_res: OMSChangeResult,
         match_request_buffer: &mut Vec<oms::BatchMatchRequest>,
@@ -638,16 +658,7 @@ impl ApplyThread {
             change_res
                 .spot_change_result
                 .into_iter()
-                .filter_map(|res| match res {
-                    Ok(be) => be.to_balance_event(),
-                    Err(e) => {
-                        error!(
-                            "Failed to convert SpotChangeResult to BalanceEvent: {:?}",
-                            e
-                        );
-                        None
-                    }
-                }),
+                .filter_map(|res| res.to_balance_event()),
         );
     }
 
@@ -674,9 +685,10 @@ impl ApplyThread {
             .ok();
     }
 
-    #[instrument(level = "info", skip(oms, mr))]
+    #[instrument(level = "info", skip_all)]
     async fn handle_match_result(
         oms: &mut OMS,
+        trade_pair: &TradePair,
         mr: &oms::MatchResult,
         ts: u64,
         event_buffer: &mut SystemEvent,
@@ -691,6 +703,7 @@ impl ApplyThread {
         match action {
             oms::BizAction::FillOrder => {
                 for record in &mr.records {
+                    oms.id_manager.update_match_id(trade_pair, record.match_id);
                     match oms.handle_success_fill(mr.trade_id, mr.prev_trade_id, ts, record) {
                         Ok(change_res) => {
                             Self::collect_events(change_res, &mut no_op, event_buffer);
@@ -822,7 +835,7 @@ impl MatchRequestSender {
     }
 
     #[instrument(
-        level = "info", skip(self, cmds), 
+        level = "info", skip_all, 
         fields(
             trade_pair = %trade_pair.pair(),
         )
@@ -935,7 +948,6 @@ impl MatchResultConsumer {
                     continue;
                 }
                 Ok(msg) => {
-                    print_kafka_msg_meta(&msg);
                     match Self::parse_msg(msg) {
                         Ok(c) => {
                             if let Err(e) = Self::propose(&sender, c).await {

@@ -133,6 +133,7 @@ async fn place_order(
     client: &mut oms_service_client::OmsServiceClient<Channel>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let req = parser::FileParser::new().parse_fill(line.trim().split(',').collect())?;
+    tracing::info!("Req{:?}", req);
     let response = client.place_order(req).await.expect("place order failed");
     tracing::info!("PlaceOrderRsp{:?}", response.into_inner());
 
