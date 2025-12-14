@@ -6,7 +6,7 @@ use getset::Getters;
 use rust_decimal::Decimal;
 
 use tte_core::{
-    err_code::{self, ERR_INPOSSIBLE_STATE, TradeEngineErr},
+    err_code::{self, TradeEngineErr},
     pbcode::oms::{BalanceEvent, BizAction},
     types::{CancelOrderResult, Direction, FillRecord, Order, Symbol},
 };
@@ -203,7 +203,6 @@ impl SingleCurrencyTxUpdater for SingleCurrencyTx {
                         "Release amount exceeds remaining frozen amount",
                     ));
                 }
-                let spot = self.spot.as_mut().unwrap();
                 if spot.frozen < amount {
                     return Err(SpotLedgerErr::new(
                         err_code::ERR_LEDGER_INSUFFICIENT_FROZEN,
@@ -458,24 +457,6 @@ impl SpotLedgerMatchResultConsumer for SpotLedger {
             maker_base_tx.clone(),
             maker_quote_tx.clone(),
         ];
-
-        // debug: print before
-        println!();
-        for (b, label) in before.iter().zip(
-            [
-                "taker_base_tx",
-                "taker_quote_tx",
-                "maker_base_tx",
-                "maker_quote_tx",
-            ]
-            .iter(),
-        ) {
-            println!(
-                "Before {}: {}",
-                label,
-                serde_json::to_string_pretty(b).unwrap()
-            );
-        }
 
         // do tx.
         match match_result.direction {
