@@ -291,6 +291,7 @@ impl SpotLedger {
         }
     }
 
+    // Transaction Commit
     pub fn commit(
         &mut self,
         spot_id: u64,

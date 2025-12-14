@@ -439,16 +439,29 @@ impl OMS {
                 Direction::Sell => &mut orders.ask_orders,
                 _ => unreachable!(),
             };
-            let mut order_detail = om.remove(&order_id).expect("must get");
+
             if is_full_fill {
+                // For fully filled orders, remove from active map and move to final_orders.
+                let mut order_detail = om.remove(&order_id).expect("must get");
+                order_detail.set_filled_qty(order_detail.filled_qty() + filled_qty);
+                order_detail
+                    .set_last_trade_id(std::cmp::max(*order_detail.last_trade_id(), trade_id));
+                order_detail.advance_version();
+                order_detail.set_current_state(state);
+                order_detail.set_update_time(update_time);
                 oms.inactivate_order(account_id, order_detail.clone());
+                order_detail
+            } else {
+                // For partially filled orders, keep them in the active map and update in place.
+                let order_detail = om.get_mut(&order_id).expect("must get");
+                order_detail.set_filled_qty(order_detail.filled_qty() + filled_qty);
+                order_detail
+                    .set_last_trade_id(std::cmp::max(*order_detail.last_trade_id(), trade_id));
+                order_detail.advance_version();
+                order_detail.set_current_state(state);
+                order_detail.set_update_time(update_time);
+                order_detail.clone()
             }
-            order_detail.set_filled_qty(order_detail.filled_qty() + filled_qty);
-            order_detail.set_last_trade_id(std::cmp::max(*order_detail.last_trade_id(), trade_id));
-            order_detail.advance_version();
-            order_detail.set_current_state(state);
-            order_detail.set_update_time(update_time);
-            order_detail
         }))
     }
 
