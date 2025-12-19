@@ -1,13 +1,13 @@
 # TTE
 
-Tiny trade engine contains Order Manage System and Match Engine. 
+Tiny trade engine(TTE) 是一个Rust编写的交易引擎原型，包含订单管理系统(OMS)和撮合引擎(MatchEngine). 
 
-# Order Type
-- Limit order (Good to cancel)
-- Market order (Immediate or cancel, Fill or cancel)
+OMS包含了订单校验、订单状态管理、风控管理、账本管理，接受下单、撤单请求后通过kafka转发给对应交易对的MatchEngine。
 
-# Arch
+MatchEngine是一个确定性状态机，按照价格优先、时间优先顺序串行撮合买卖双方，并输出成交结果、撤单结果。
 
-<img width="3545" height="2341" alt="whiteboard_exported_image" src="https://github.com/user-attachments/assets/4c5dcc25-d279-4c3b-b8d0-435d5f11824d" />
+OMS订阅相关topic消费撮合输出，并根据结果来更新订单和账本。
 
-
+# 功能
+- 支持下单、撤单
+- 订单类型支持：限价单(Good to cancel), 市价单(Fill or kill, Immediate or cancel)
