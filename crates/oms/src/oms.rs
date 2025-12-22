@@ -46,7 +46,7 @@ struct SymbolMarketData {
 pub struct OMS {
     active_orders: BTreeMap<u64, AccountOrderList>, // account_id -> bid \ ask orders
     // todo: 历史订单持久化存储
-    final_orders: BTreeMap<u64, Vec<OrderDetail>>, // account_id -> []orders
+    final_orders: BTreeMap<u64, HashMap<OrderID, OrderDetail>>, // account_id -> order_id -> orders
     #[getset(get = "pub")]
     ledger: SpotLedger,
     // todo: 考虑基于定时器的缓存, 防止重复使用同一个client_order_id导致数据关联错误
@@ -273,10 +273,18 @@ impl OMS {
     }
 
     pub fn take_snapshot(&self) -> OMSSnapshot {
+        let final_orders = self
+            .final_orders
+            .iter()
+            .map(|(k, v)| {
+                let orders: Vec<OrderDetail> = v.values().cloned().collect();
+                (*k, orders)
+            })
+            .collect::<BTreeMap<u64, Vec<OrderDetail>>>();
         OMSSnapshot {
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
             active_orders: self.active_orders.clone(),
-            final_orders: self.final_orders.clone(),
+            final_orders,
             ledger: self.ledger.clone(),
             client_order_map: self.client_order_map.clone(),
             market_data: self.market_data.clone(),
@@ -337,6 +345,61 @@ impl OMS {
         Ok(())
     }
 
+    fn check_cancel_order(
+        &self,
+        account_id: u64,
+        order_id: &String,
+        client_order_id: &String,
+    ) -> Result<(), OMSErr> {
+        if order_id.is_empty() && client_order_id.is_empty() {
+            return Err(OMSErr::new(
+                err_code::ERR_INVALID_REQUEST,
+                "Either order_id or client_order_id must be provided",
+            ));
+        }
+
+        // 优先用 client_order_id, 其次req.order_id
+        let order_id = if !client_order_id.is_empty() {
+            match self.client_order_map.get(client_order_id) {
+                Some(oid) => oid,
+                None => {
+                    return Err(OMSErr::new(
+                        err_code::ERR_OMS_ORDER_NOT_FOUND,
+                        "Order not found by client_order_id",
+                    ));
+                }
+            }
+        } else {
+            order_id
+        };
+
+        let order = if let Some(order) = self.get_active_order_detail(account_id, &order_id) {
+            order
+        } else {
+            self.final_orders
+                .get(&account_id)
+                .and_then(|orders| orders.get(order_id))
+                .ok_or_else(|| {
+                    OMSErr::new(
+                        err_code::ERR_OMS_ORDER_NOT_FOUND,
+                        "Order not found in active or final orders",
+                    )
+                })?
+        };
+
+        match order.current_state() {
+            OrderState::Cancelled => Err(OMSErr::new(
+                err_code::ERR_OMS_ORDER_CANCELED,
+                "Order is already filled",
+            )),
+            OrderState::Filled | OrderState::Rejected => Err(OMSErr::new(
+                err_code::ERR_OMS_INVALID_ACTION,
+                "Order is finished",
+            )),
+            _ => Ok(()),
+        }
+    }
+
     // refactor: atomic
     fn insert_order(
         &mut self,
@@ -347,6 +410,18 @@ impl OMS {
         let order_id = order.order_id.clone();
         let client_order_id = order.client_order_id.clone();
         let direction = order.direction;
+
+        // 幂等
+        if let Some(existed_order) = self.client_order_map.get(&client_order_id) {
+            error!(
+                "Duplicate client order ID: account_id={}, client_order_id={}, order_id={}",
+                account_id, client_order_id, existed_order
+            );
+            return Err(OMSErr::new(
+                err_code::ERR_OMS_DUPLICATE_CLI_ORD_ID,
+                "duplicate client order id",
+            ));
+        }
 
         if let Some(account_orders) = self.active_orders.get(&account_id) {
             let order_map = match direction {
@@ -394,8 +469,8 @@ impl OMS {
         self.client_order_map.remove(client_order_id);
         self.final_orders
             .entry(account_id)
-            .or_insert(Vec::with_capacity(4))
-            .push(filled_order);
+            .or_insert(HashMap::with_capacity(8))
+            .insert(filled_order.original().order_id().clone(), filled_order);
     }
 
     // 更新订单状态、已成交数量。如果订单完全成交，从活跃订单删除。
@@ -664,6 +739,16 @@ impl OMSRpcHandler for OMS {
                 })
             }
             Some(BizAction::CancelOrder) => {
+                // 检查是否以及cancel了
+                let req = cmd.cancel_order_req.as_ref().ok_or_else(|| {
+                    OMSErr::new(
+                        err_code::ERR_INVALID_REQUEST,
+                        "Missing field cancel_order_req",
+                    )
+                })?;
+                let account_id = req.account_id;
+                self.check_cancel_order(account_id, &req.order_id, &req.client_order_id)?;
+
                 let prev_trade_id = self.id_manager.trade_id().clone();
                 let trade_id = self.id_manager.update_trade_id(current_seq_id);
                 // 无订单更新
@@ -1019,5 +1104,153 @@ mod test {
         // expect: active orders
         let account_orders = oms.active_orders.get(&1001).unwrap();
         assert_eq!(account_orders.ask_orders.len(), 1);
+    }
+
+    // Expect: ignore duplicate place order requests
+    #[test]
+    fn test_duplicate_place_order_err() {
+        let (balances, market_data) = init_ledger_market();
+        let mut oms = OMS::new();
+        oms.with_init_ledger(balances).with_market_data(market_data);
+        let req = PlaceOrderReq {
+            order: Some(oms::Order {
+                order_id: "".to_string(),
+                trade_pair: Some(TradePair::new("ETH", "USDT")),
+                direction: Direction::Sell as i32,
+                time_in_force: TimeInForce::Gtk as i32,
+                order_type: OrderType::Market as i32,
+                price: "3999.00".to_string(),
+                quantity: "0.2000".to_string(),
+                create_time: 1765702254358148,
+                client_order_id: "CLI_1002_00010".to_string(),
+                stp_strategy: oms::StpStrategy::CancelTaker as i32,
+                account_id: 1001,
+                post_only: false,
+                trade_id: 0,
+                prev_trade_id: 0,
+                version: 1,
+            }),
+        };
+        let result1 = oms.handle_rpc_cmd(
+            1,
+            &TradePair::new("ETH", "USDT"),
+            oms::RpcCmd {
+                biz_action: BizAction::PlaceOrder as i32,
+                place_order_req: Some(req.clone()),
+                cancel_order_req: None,
+            },
+        );
+        assert!(result1.is_ok());
+
+        let result2 = oms.handle_rpc_cmd(
+            2,
+            &TradePair::new("ETH", "USDT"),
+            oms::RpcCmd {
+                biz_action: BizAction::PlaceOrder as i32,
+                place_order_req: Some(req),
+                cancel_order_req: None,
+            },
+        );
+        assert!(result2.is_err());
+        println!("Expected error: {:?}", result2.err().unwrap());
+    }
+
+    // Expect: ignore duplicate cancel order requests
+    #[test]
+    fn test_duplicate_cancel_err() {
+        // cmds: placeorder, cancel, cancel
+        let (balances, market_data) = init_ledger_market();
+        let mut oms = OMS::new();
+        oms.with_init_ledger(balances).with_market_data(market_data);
+        let req = PlaceOrderReq {
+            order: Some(oms::Order {
+                order_id: "".to_string(),
+                trade_pair: Some(TradePair::new("ETH", "USDT")),
+                direction: Direction::Sell as i32,
+                time_in_force: TimeInForce::Gtk as i32,
+                order_type: OrderType::Market as i32,
+                price: "3999.00".to_string(),
+                quantity: "0.2000".to_string(),
+                create_time: 1765702254358148,
+                client_order_id: "CLI_1002_00010".to_string(),
+                stp_strategy: oms::StpStrategy::CancelTaker as i32,
+                account_id: 1001,
+                post_only: false,
+                trade_id: 0,
+                prev_trade_id: 0,
+                version: 1,
+            }),
+        };
+
+        let result1 = oms.handle_rpc_cmd(
+            1,
+            &TradePair::new("ETH", "USDT"),
+            oms::RpcCmd {
+                biz_action: BizAction::PlaceOrder as i32,
+                place_order_req: Some(req.clone()),
+                cancel_order_req: None,
+            },
+        );
+        assert!(result1.is_ok());
+
+        // 查询orderID
+        let order = oms
+            .get_active_order_detail_by_client_id(1001, "CLI_1002_00010")
+            .unwrap();
+        let order_id = order.original().order_id().clone();
+        println!("Placed order_id={}", order_id);
+
+        // cancel
+        assert!(
+            oms.handle_success_cancel(
+                1,
+                0,
+                1765702255358149,
+                &oms::CancelResult {
+                    trade_pair: Some(TradePair::new("ETH", "USDT")),
+                    account_id: 1001,
+                    order_id: order_id.clone(),
+                    direction: Direction::Sell as i32,
+                    order_state: oms::OrderState::Cancelled as i32,
+                },
+            )
+            .is_ok()
+        );
+
+        // 再次发起cancel, 失败
+        let cancel_req_result = oms.handle_rpc_cmd(
+            3,
+            &TradePair::new("ETH", "USDT"),
+            oms::RpcCmd {
+                biz_action: BizAction::CancelOrder as i32,
+                place_order_req: None,
+                cancel_order_req: Some(oms::CancelOrderReq {
+                    base: "ETH".to_string(),
+                    quote: "USDT".to_string(),
+                    account_id: 1001,
+                    order_id: order_id.clone(),
+                    direction: Direction::Sell as i32,
+                    client_order_id: "CLI_1002_00010".to_string(),
+                }),
+            },
+        );
+        assert!(cancel_req_result.is_err());
+        println!("Expected error: {:?}", cancel_req_result.err().unwrap());
+
+        // 再次消费cancel结果
+        let cancel_result2 = oms.handle_success_cancel(
+            2,
+            0,
+            1765702256358150,
+            &oms::CancelResult {
+                trade_pair: Some(TradePair::new("ETH", "USDT")),
+                account_id: 1001,
+                order_id: order_id.clone(),
+                direction: Direction::Sell as i32,
+                order_state: oms::OrderState::Cancelled as i32,
+            },
+        );
+        assert!(cancel_result2.is_err());
+        println!("Expected error: {:?}", cancel_result2.err().unwrap());
     }
 }

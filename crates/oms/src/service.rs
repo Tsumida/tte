@@ -12,7 +12,7 @@ use prost::Message as _;
 use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
 use tokio::sync::{RwLock, mpsc, oneshot};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument};
 use tte_core::pbcode::oms::{self, TradeCmd};
 use tte_core::precision;
 use tte_core::types::{BatchMatchResultTransfer, TradePair};
@@ -512,7 +512,6 @@ impl ApplyThread {
 
             for cmd in batch.drain(..) {
                 // todo: set ready if prev_seq_id <= oms.seq_id, else waits preceding cmds
-                let mut err = None;
                 let ts = cmd.ts;
                 match cmd.cmd {
                     CmdFlow::TradeCmd(trade_cmd) => {
@@ -535,7 +534,6 @@ impl ApplyThread {
                                     "OMS cmd(trade_id={}, prev={}) error: {:?}",
                                     cmd.seq_id, cmd.prev_seq_id, e
                                 );
-                                err = Some(e);
                             }
                         }
                     }
