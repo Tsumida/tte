@@ -8,6 +8,9 @@ MatchEngine是一个确定性状态机，按照价格优先、时间优先顺序
 
 OMS订阅相关topic消费撮合输出，并根据结果来更新订单和账本。
 
+[整体设计文档](https://ai.feishu.cn/wiki/HQCIwBlqZik5bhkPKcIcHJbCnVc)
+
 # 功能
 - 支持下单、撤单
 - 订单类型支持：限价单(Good to cancel), 市价单(Fill or kill, Immediate or cancel)
+
