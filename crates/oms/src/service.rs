@@ -68,7 +68,6 @@ enum CmdFlow {
 #[derive(Debug)]
 struct OMSCmd {
     cmd: CmdFlow,
-    rsp_chan: Option<InformSender>,
     seq_id: u64,
     prev_seq_id: u64,
     ts: u64,
@@ -87,54 +86,44 @@ impl SequenceSetter for OMSCmd {
 
 // 注意这里的id都是空白的，需要后续修改
 impl OMSCmd {
-    fn place_order_cmd_without_id(req: oms::PlaceOrderReq) -> (Self, InformReceiver) {
-        let (rsp_chan, rsp_recv) = oneshot::channel();
+    fn place_order_cmd_without_id(req: oms::PlaceOrderReq) -> Self {
         // refactor: avoid unwrap
         let trade_pair = req.order.as_ref().unwrap().trade_pair.as_ref().unwrap();
 
-        (
-            OMSCmd {
-                seq_id: 0,
-                prev_seq_id: 0,
-                ts: 0,
-                cmd: CmdFlow::TradeCmd(oms::TradeCmd {
-                    trade_id: 0,
-                    prev_trade_id: 0,
-                    trade_pair: Some(trade_pair.clone()),
-                    rpc_cmd: Some(oms::RpcCmd {
-                        biz_action: oms::BizAction::PlaceOrder as i32,
-                        place_order_req: Some(req),
-                        cancel_order_req: None,
-                    }),
+        OMSCmd {
+            seq_id: 0,
+            prev_seq_id: 0,
+            ts: 0,
+            cmd: CmdFlow::TradeCmd(oms::TradeCmd {
+                trade_id: 0,
+                prev_trade_id: 0,
+                trade_pair: Some(trade_pair.clone()),
+                rpc_cmd: Some(oms::RpcCmd {
+                    biz_action: oms::BizAction::PlaceOrder as i32,
+                    place_order_req: Some(req),
+                    cancel_order_req: None,
                 }),
-                rsp_chan: Some(rsp_chan),
-            },
-            rsp_recv,
-        )
+            }),
+        }
     }
 
-    fn cancel_order_cmd_without_id(req: oms::CancelOrderReq) -> (Self, InformReceiver) {
-        let (rsp_chan, rsp_recv) = oneshot::channel();
+    fn cancel_order_cmd_without_id(req: oms::CancelOrderReq) -> Self {
         let trade_pair = TradePair::new(&req.base, &req.quote);
-        (
-            OMSCmd {
-                seq_id: 0,
-                prev_seq_id: 0,
-                ts: 0,
-                cmd: CmdFlow::TradeCmd(oms::TradeCmd {
-                    trade_id: 0,
-                    prev_trade_id: 0,
-                    trade_pair: Some(trade_pair.clone()),
-                    rpc_cmd: Some(oms::RpcCmd {
-                        biz_action: oms::BizAction::CancelOrder as i32,
-                        place_order_req: None,
-                        cancel_order_req: Some(req),
-                    }),
+        OMSCmd {
+            seq_id: 0,
+            prev_seq_id: 0,
+            ts: 0,
+            cmd: CmdFlow::TradeCmd(oms::TradeCmd {
+                trade_id: 0,
+                prev_trade_id: 0,
+                trade_pair: Some(trade_pair.clone()),
+                rpc_cmd: Some(oms::RpcCmd {
+                    biz_action: oms::BizAction::CancelOrder as i32,
+                    place_order_req: None,
+                    cancel_order_req: Some(req),
                 }),
-                rsp_chan: Some(rsp_chan),
-            },
-            rsp_recv,
-        )
+            }),
+        }
     }
 
     fn match_result_cmd(match_results: oms::BatchMatchResult) -> Self {
@@ -143,7 +132,6 @@ impl OMSCmd {
             prev_seq_id: 0,
             ts: 0,
             cmd: CmdFlow::MatchResult(match_results),
-            rsp_chan: None,
         }
     }
 }
@@ -229,7 +217,7 @@ impl TradeSystem {
     }
 }
 
-// Impl RPC Handler
+// note: 这两个接口都是异步提交，不保证成功。需要按client_order_id查询订单状态
 #[tonic::async_trait]
 impl oms::oms_service_server::OmsService for TradeSystem {
     #[instrument(level = "info", skip_all)]
@@ -254,24 +242,12 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         })?;
         drop(oms); // critical: avoid deadlock
 
-        // todo, write order into sequencer channel and wait for response.
-        let (cmd, rsp_recv) = OMSCmd::place_order_cmd_without_id(place_order_req.clone());
+        let cmd = OMSCmd::place_order_cmd_without_id(place_order_req.clone());
         let start_time = std::time::Instant::now();
         let _ = self
             .propose(cmd)
             .await
             .map_err(|e| tonic::Status::internal(format!("Sequencer append failed: {:?}", e)))?;
-
-        // todo: timeout
-        let resp = rsp_recv
-            .await
-            .map_err(|e| tonic::Status::internal(format!("Failed to receive response: {:?}", e)))?;
-        if !resp.is_success() {
-            tonic::Status::internal(format!(
-                "Place order failed: {:?}",
-                resp.err.as_ref().unwrap()
-            ));
-        }
 
         tracing::info!(
             "PlaceOrder done, dur={} ms",
@@ -333,16 +309,12 @@ impl oms::oms_service_server::OmsService for TradeSystem {
         cancel_req.quote = original.trade_pair().quote.clone();
         drop(oms); // critical: avoid deadlock
 
-        let (cmd, rsp_recv) = OMSCmd::cancel_order_cmd_without_id(cancel_req.clone());
+        let cmd = OMSCmd::cancel_order_cmd_without_id(cancel_req.clone());
         let start_time = std::time::Instant::now();
         let _ =
             self.submit_sender.send(cmd).await.map_err(|e| {
                 tonic::Status::internal(format!("Sequencer append failed: {:?}", e))
             })?;
-
-        let _ = rsp_recv
-            .await
-            .map_err(|e| tonic::Status::internal(format!("Failed to receive response: {:?}", e)))?;
 
         tracing::info!(
             "CancelOrder done, dur={} ms",
@@ -601,22 +573,6 @@ impl ApplyThread {
                             }
                         }
                         drop(oms);
-                    }
-                }
-                if let Some(ch) = cmd.rsp_chan {
-                    if ch
-                        .send(Informer {
-                            seq_id: cmd.seq_id,
-                            prev_seq_id: cmd.prev_seq_id,
-                            is_success: err.is_none(),
-                            err,
-                        })
-                        .is_err()
-                    {
-                        warn!(
-                            "ApplyThread: failed to send informer for seq_id={}",
-                            cmd.seq_id,
-                        );
                     }
                 }
             }
