@@ -1,6 +1,6 @@
 # --- 阶段 1: Builder (编译阶段) ---
 # 使用 clux/muslrust 镜像。
-FROM clux/muslrust:1.91.1-stable-2025-11-26 AS builder
+FROM clux/muslrust:1.92.0-stable-2025-12-14 AS builder
 
 # 工作目录
 WORKDIR /home/rust/src
