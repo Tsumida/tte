@@ -38,6 +38,51 @@ bench:
 	@cargo build --workspace --release
 	@cargo bench --package ledger -- --nocapture 
 
+
+copy-snapshot:
+	@set -e; \
+	TIMESTAMP=$$(date +%Y%m%d_%H%M%S); \
+	OUT_DIR=$(SS_DIR); \
+	\
+	echo "==> Copying OMS snapshots from oms-server ..."; \
+	if docker ps --format '{{.Names}}' | grep -q '^oms-server$$'; then \
+		docker cp oms-server:/app/snapshot/. $$OUT_DIR/; \
+	else \
+		echo "OMS container oms-server not running"; \
+	fi; \
+	\
+	for pair in BTCUSDT ETHUSDT; do \
+		container=me_$$pair; \
+		echo "==> Copying ME snapshots from $$container ..."; \
+		if docker ps --format '{{.Names}}' | grep -q "^$$container$$"; then \
+			docker cp $$container:/app/snapshot/. $$OUT_DIR/; \
+		else \
+			echo "Container $$container not running"; \
+		fi; \
+	done; \
+	\
+	echo "==> Done. Files copied to $$OUT_DIR"
+
+test:
+	@echo "Cleaning up previous test data..." && rm -rf $(SS_DIR) && mkdir -p $(SS_DIR)
+	@echo "Waiting for services to start..." 
+	@chmod +x ./bin/mvp_client
+	@docker-compose -f $(DOCKER_COMPOSE_FILE) down  && sleep 2 && docker-compose -f $(DOCKER_COMPOSE_FILE) up -d && sleep 3
+	@echo "Running integration tests" && ./bin/mvp_client ./tests/integration/testcase_massive.case 
+# 	@echo "Running integration tests" && go test -timeout 300s -v -count=1 -run TestMassiveOrders  ./tests/integration/oms/... &> ./tmp/test.log
+	@echo "Wait kafka to be consumed..." && sleep 10
+	@echo "Dump snapshot" && ./bin/mvp_client ./tests/integration/testcase_snapshot.case && sleep 2 && $(MAKE) copy-snapshot
+	@echo "Checking snapshot consistency..." && python3 tests/data/snapshot_check.py --dir=$(SS_DIR)
+	@echo "Checking oms-redis consistency..." && go test -v -count=1 ./tests/integration/tex/...
+
+check-redis:
+	@echo "Cleaning up previous test data..." && rm -rf $(SS_DIR) && mkdir -p $(SS_DIR) && touch ./tmp/test2.log && touch ./tmp/test.log
+	@docker-compose -f $(DOCKER_COMPOSE_FILE) down  && sleep 2 && docker-compose -f $(DOCKER_COMPOSE_FILE) up -d && sleep 3
+	@echo "Check snapshot consistency..." && python3 ./tests/data/snapshot_check.py --dir=$(SS_DIR)
+	@echo "Check snapshot and redis..." && go test -timeout 30s -v -count=1 -run TestOrderInRedis  ./tests/integration/oms/... > ./tmp/test2.log
+
+
+
 # ==============================================================================
 # 构建
 # ==============================================================================
@@ -48,16 +93,5 @@ build-server:
 
 build-img: build-server
 	@echo "✅ 所有开发镜像构建完成。"
-
-# ==============================================================================
-# 其他
-# ==============================================================================
-copy-snapshot:
-	@mkdir -p "$(SS_DIR)/$(TIMESTAMP)/server" && mkdir -p "$(SS_DIR)/$(TIMESTAMP)/me"
-	@echo "==> Copying Server snapshots from $(OMS_CONTAINER) ..."
-	-@docker cp $(OMS_CONTAINER):"$(CONTAINER_SS_PATH)/" "$(SS_DIR)/$(TIMESTAMP)/server/" || echo "No Server snapshots found in $(OMS_CONTAINER)."
-	@echo "==> Copying ME snapshots from $(ME_CONTAINER) ..."
-	-@docker cp $(ME_CONTAINER):"$(CONTAINER_SS_PATH)/" "$(SS_DIR)/$(TIMESTAMP)/me/" || echo "No ME snapshots found in $(ME_CONTAINER)." 	
-	@echo "==> Done. Files copied to $(SS_DIR)/$(TIMESTAMP)"
 
 .PHONY: test integration-test cov bench build-server build-me build-img copy-snapshot

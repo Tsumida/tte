@@ -7,6 +7,7 @@ edition = "2024"
 members = [
     "crates/core",
     "crates/infra",
+    "crates/rlr",
     "crates/sequencer" ,
     "crates/ledger" ,
     "crates/match_engine"  ,
@@ -50,5 +51,4 @@ tonic-build = "0.9"
 
 [build-dependencies]
 tonic-build = { version = "0.9"}
-
 
