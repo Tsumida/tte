@@ -427,10 +427,6 @@ impl oms::oms_service_server::OmsService for TradeSystem {
     }
 }
 
-struct ReplayThread {
-    reply_chan: oneshot::Sender<Informer>,
-}
-
 struct ApplyThreadBuilder {
     oms: Arc<RwLock<OMS>>,
     commit_recv: Option<mpsc::Receiver<OMSCmd>>,

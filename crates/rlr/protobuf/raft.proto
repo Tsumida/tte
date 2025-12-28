@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package raft;
+
+// 
+service RaftService {
+  // 
+  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse) {}
+
+  // 
+  rpc SendFullSnapshot (SendFullSnapshotRequest) returns (SendFullSnapshotResponse) {}
+
+  // 
+  rpc Vote (VoteRequest) returns (VoteResponse) {}
+}
+
+// 
+message LogId {
+  uint64 term = 1;
+  uint64 index = 2;
+}
+
+//
+message LogEntry {
+  LogId log_id = 1;
+  bytes payload = 2; // Contains the encoded EntryPayload (Normal, Membership, etc.)
+}
+
+// --- AppendEntries ---
+message AppendEntriesRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  LogId prev_log_id = 3; 
+  repeated LogEntry entries = 4;
+  uint64 leader_commit = 5;
+}
+
+//
+message AppendEntriesResponse {
+  uint64 term = 1;
+  oneof result {
+    bool success = 2;
+    LogId conflict = 3; // Allows leader to skip ahead to the last known good index
+  }
+}
+
+// --- Vote ---
+message VoteRequest {
+  uint64 term = 1;
+  uint64 candidate_id = 2;
+  LogId last_log_id = 3;
+}
+
+//
+message VoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+  LogId last_log_id = 3; // Helpful for candidate to see if it's lagging
+}
+
+// --- Snapshot ---
+//
+message SendFullSnapshotRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  LogId last_log_id = 3;
+  uint64 offset = 4;
+  bytes data = 5;
+  bool done = 6;
+}
+
+//
+message SendFullSnapshotResponse {
+  uint64 term = 1;
+}

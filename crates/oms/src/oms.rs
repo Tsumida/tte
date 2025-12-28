@@ -579,7 +579,7 @@ impl OMS {
         let mut taker_order_commit = self.fill_order(
             direction, // taker 方向
             taker_account_id,
-            taker_order_id, // 传入 String
+            taker_order_id,
             qty,
             taker_state,
             trade_id,
@@ -590,7 +590,7 @@ impl OMS {
         let mut maker_order_commit = self.fill_order(
             rev_direction, // maker 方向相反
             maker_account_id,
-            maker_order_id, // 传入 String
+            maker_order_id,
             qty,
             maker_state,
             trade_id,

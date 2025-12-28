@@ -8,39 +8,19 @@ path = "src/lib.rs"
 
 
 [dependencies]
-tokio.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-clap.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-uuid.workspace = true
-tonic.workspace = true
-prost.workspace = true
-futures.workspace = true
-tokio-stream = "0.1"
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+futures = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+async-trait = { workspace = true }
+getset = { workspace = true }
+thiserror = { workspace = true }
 
-anyhow = "1"
-bytes = "1"
-bincode = "1.3"
-async-trait = "0.1"
-thiserror = "2"
-
-openraft = { version = "0.8", features = ["serde"], optional = true }
-rocksdb = { version = "0.23", default-features = false, features = ["snappy"], optional = true }
-
-[features]
-# Keep the demo buildable in minimal environments.
-default = ["file-store"]
-
-# A small append-only WAL store (demo + dev).
-file-store = []
-
-# Enable RocksDB-backed storage (requires libclang for bindgen in many environments).
-rocksdb-store = ["dep:rocksdb"]
-
-# Enable OpenRaft integration (future work; API stays stable).
-openraft-rlr = ["dep:openraft"]
+# use fork in https://github.com/Tsumida/openraft/tree/main
+openraft = { git = "https://github.com/Tsumida/openraft.git" }
+# openraft = { workspace = true }
 
 [build-dependencies]
-tonic-build.workspace = true
+# 构建依赖，由 build.rs 使用
+prost-build = "0.12"
+tonic-build = "0.9"
