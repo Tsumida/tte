@@ -48,9 +48,10 @@ serde_json = "1.0.145"
 lazy_static = "1.5.0"
 clap = { version = "4.5.53", features = ["derive"] }
 tonic-build = "0.9"
-openraft = "0.9.21"
+openraft = { git = "https://github.com/Tsumida/openraft.git", branch = "main", default-features = true}
 thiserror = "1.0.68"
-
+byteorder = "1.4.3"
+rocksdb = { version = "0.24.0"}
 
 [build-dependencies]
 prost-build = "0.12"
