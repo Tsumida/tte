@@ -16,28 +16,25 @@ use openraft::OptionalSend;
 use openraft::RaftLogReader;
 use openraft::RaftTypeConfig;
 use openraft::TokioRuntime;
+use openraft::alias::EntryOf;
+use openraft::alias::LogIdOf;
+use openraft::alias::VoteOf;
 use openraft::entry::RaftEntry;
 use openraft::storage::IOFlushed;
 use openraft::storage::RaftLogStorage;
-use openraft::type_config::alias::EntryOf;
-use openraft::type_config::alias::LogIdOf;
-use openraft::type_config::alias::VoteOf;
 use rocksdb::ColumnFamily;
 use rocksdb::DB;
 use rocksdb::Direction;
 use serde_json;
 use tokio::task::spawn_blocking;
 
-//
-// CF:
-//    1. meta: for raft metadata
-//    2. logs: for raft log entries
-//
 const CF_META: &'static str = "meta";
 const CF_LOGS: &'static str = "logs";
+const CF_PURGE_ID: &'static str = "last_purged_log_id";
+const CF_VOTE: &'static str = "vote";
 
 #[derive(Debug, Clone)]
-pub struct RocksLogStore<C>
+pub struct RlrLogStore<C>
 where
     C: RaftTypeConfig,
 {
@@ -45,7 +42,7 @@ where
     _p: PhantomData<C>,
 }
 
-impl<C> RocksLogStore<C>
+impl<C> RlrLogStore<C>
 where
     C: RaftTypeConfig,
 {
@@ -101,7 +98,7 @@ where
     }
 }
 
-impl<C> RaftLogReader<C> for RocksLogStore<C>
+impl<C> RaftLogReader<C> for RlrLogStore<C>
 where
     C: RaftTypeConfig,
 {
@@ -143,7 +140,7 @@ where
     }
 }
 
-impl<C> RaftLogStorage<C> for RocksLogStore<C>
+impl<C> RaftLogStorage<C> for RlrLogStore<C>
 where
     C: RaftTypeConfig<AsyncRuntime = TokioRuntime>,
 {
@@ -195,6 +192,7 @@ where
         Ok(())
     }
 
+    // 将日志持久化到本地存储, key=log index, value=bytes
     async fn append<I>(&mut self, entries: I, callback: IOFlushed<C>) -> Result<(), io::Error>
     where
         I: IntoIterator<Item = EntryOf<C>> + Send,
@@ -263,8 +261,10 @@ where
 /// This sub mod defines the key-value pairs of these metadata.
 mod meta {
     use openraft::RaftTypeConfig;
-    use openraft::type_config::alias::LogIdOf;
-    use openraft::type_config::alias::VoteOf;
+    use openraft::alias::LogIdOf;
+    use openraft::alias::VoteOf;
+
+    use crate::storage::{CF_PURGE_ID, CF_VOTE};
 
     /// Defines metadata key and value
     pub(crate) trait StoreMeta<C>
@@ -285,14 +285,15 @@ mod meta {
     where
         C: RaftTypeConfig,
     {
-        const KEY: &'static str = "last_purged_log_id";
+        const KEY: &'static str = CF_PURGE_ID;
         type Value = LogIdOf<C>;
     }
+
     impl<C> StoreMeta<C> for Vote
     where
         C: RaftTypeConfig,
     {
-        const KEY: &'static str = "vote";
+        const KEY: &'static str = CF_VOTE;
         type Value = VoteOf<C>;
     }
 }

@@ -1,7 +1,8 @@
 // #![cfg(feature = "openraft")]
 
+use crate::pbcode::raft::{VoteReq, VoteRsp};
 use crate::types::AppTypeConfig;
-// use crate::rpc::{RequestPayload, ResponsePayload, RpcHandler};
+use openraft::Vote;
 use openraft::{
     OptionalSend, Snapshot,
     error::{RPCError, ReplicationClosed, StreamingError},
@@ -16,7 +17,9 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::time::Duration;
-struct RlrNetwork {}
+struct RlrNetwork {
+    // peers:
+}
 
 impl openraft::network::v2::RaftNetworkV2<AppTypeConfig> for RlrNetwork {
     async fn append_entries(
@@ -32,6 +35,13 @@ impl openraft::network::v2::RaftNetworkV2<AppTypeConfig> for RlrNetwork {
         rpc: VoteRequest<AppTypeConfig>,
         option: RPCOption,
     ) -> Result<VoteResponse<AppTypeConfig>, RPCError<AppTypeConfig>> {
+        // let req = VoteReq {
+        //     term: rpc.vote.term,
+        //     candidate_id: rpc.vote.candidate_id,
+        //     last_log_index: rpc.vote.last_log_index,
+        //     last_log_term: rpc.vote.last_log_term,
+        // };
+        // let
         todo!()
     }
 

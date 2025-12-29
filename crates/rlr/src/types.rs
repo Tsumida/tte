@@ -10,8 +10,7 @@ impl std::fmt::Display for AppEntry {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AppResponse(pub Vec<u8>); // todo: 应该是CmdWrapper \ OMSCmd
-pub type AppSnapshot = Vec<u8>;
+pub struct AppResponse(pub Vec<u8>);
 pub type AppNodeId = u64;
 
 openraft::declare_raft_types!(

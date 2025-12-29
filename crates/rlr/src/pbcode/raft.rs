@@ -20,7 +20,7 @@ pub struct LogEntry {
 /// --- AppendEntries ---
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AppendEntriesRequest {
+pub struct AppendEntriesReq {
     #[prost(uint64, tag = "1")]
     pub term: u64,
     #[prost(uint64, tag = "2")]
@@ -35,14 +35,14 @@ pub struct AppendEntriesRequest {
 ///
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AppendEntriesResponse {
+pub struct AppendEntriesRsp {
     #[prost(uint64, tag = "1")]
     pub term: u64,
-    #[prost(oneof = "append_entries_response::Result", tags = "2, 3")]
-    pub result: ::core::option::Option<append_entries_response::Result>,
+    #[prost(oneof = "append_entries_rsp::Result", tags = "2, 3")]
+    pub result: ::core::option::Option<append_entries_rsp::Result>,
 }
-/// Nested message and enum types in `AppendEntriesResponse`.
-pub mod append_entries_response {
+/// Nested message and enum types in `AppendEntriesRsp`.
+pub mod append_entries_rsp {
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
@@ -56,7 +56,7 @@ pub mod append_entries_response {
 /// --- Vote ---
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct VoteRequest {
+pub struct VoteReq {
     #[prost(uint64, tag = "1")]
     pub term: u64,
     #[prost(uint64, tag = "2")]
@@ -67,7 +67,7 @@ pub struct VoteRequest {
 ///
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct VoteResponse {
+pub struct VoteRsp {
     #[prost(uint64, tag = "1")]
     pub term: u64,
     #[prost(bool, tag = "2")]
@@ -80,7 +80,7 @@ pub struct VoteResponse {
 ///
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SendFullSnapshotRequest {
+pub struct SendFullSnapshotReq {
     #[prost(uint64, tag = "1")]
     pub term: u64,
     #[prost(uint64, tag = "2")]
@@ -97,7 +97,7 @@ pub struct SendFullSnapshotRequest {
 ///
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SendFullSnapshotResponse {
+pub struct SendFullSnapshotRsp {
     #[prost(uint64, tag = "1")]
     pub term: u64,
 }
@@ -190,9 +190,9 @@ pub mod raft_service_client {
         ///
         pub async fn append_entries(
             &mut self,
-            request: impl tonic::IntoRequest<super::AppendEntriesRequest>,
+            request: impl tonic::IntoRequest<super::AppendEntriesReq>,
         ) -> std::result::Result<
-            tonic::Response<super::AppendEntriesResponse>,
+            tonic::Response<super::AppendEntriesRsp>,
             tonic::Status,
         > {
             self.inner
@@ -216,9 +216,9 @@ pub mod raft_service_client {
         ///
         pub async fn send_full_snapshot(
             &mut self,
-            request: impl tonic::IntoRequest<super::SendFullSnapshotRequest>,
+            request: impl tonic::IntoRequest<super::SendFullSnapshotReq>,
         ) -> std::result::Result<
-            tonic::Response<super::SendFullSnapshotResponse>,
+            tonic::Response<super::SendFullSnapshotRsp>,
             tonic::Status,
         > {
             self.inner
@@ -242,8 +242,8 @@ pub mod raft_service_client {
         ///
         pub async fn vote(
             &mut self,
-            request: impl tonic::IntoRequest<super::VoteRequest>,
-        ) -> std::result::Result<tonic::Response<super::VoteResponse>, tonic::Status> {
+            request: impl tonic::IntoRequest<super::VoteReq>,
+        ) -> std::result::Result<tonic::Response<super::VoteRsp>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -271,24 +271,24 @@ pub mod raft_service_server {
         ///
         async fn append_entries(
             &self,
-            request: tonic::Request<super::AppendEntriesRequest>,
+            request: tonic::Request<super::AppendEntriesReq>,
         ) -> std::result::Result<
-            tonic::Response<super::AppendEntriesResponse>,
+            tonic::Response<super::AppendEntriesRsp>,
             tonic::Status,
         >;
         ///
         async fn send_full_snapshot(
             &self,
-            request: tonic::Request<super::SendFullSnapshotRequest>,
+            request: tonic::Request<super::SendFullSnapshotReq>,
         ) -> std::result::Result<
-            tonic::Response<super::SendFullSnapshotResponse>,
+            tonic::Response<super::SendFullSnapshotRsp>,
             tonic::Status,
         >;
         ///
         async fn vote(
             &self,
-            request: tonic::Request<super::VoteRequest>,
-        ) -> std::result::Result<tonic::Response<super::VoteResponse>, tonic::Status>;
+            request: tonic::Request<super::VoteReq>,
+        ) -> std::result::Result<tonic::Response<super::VoteRsp>, tonic::Status>;
     }
     ///
     #[derive(Debug)]
@@ -375,16 +375,16 @@ pub mod raft_service_server {
                     struct AppendEntriesSvc<T: RaftService>(pub Arc<T>);
                     impl<
                         T: RaftService,
-                    > tonic::server::UnaryService<super::AppendEntriesRequest>
+                    > tonic::server::UnaryService<super::AppendEntriesReq>
                     for AppendEntriesSvc<T> {
-                        type Response = super::AppendEntriesResponse;
+                        type Response = super::AppendEntriesRsp;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::AppendEntriesRequest>,
+                            request: tonic::Request<super::AppendEntriesReq>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -421,16 +421,16 @@ pub mod raft_service_server {
                     struct SendFullSnapshotSvc<T: RaftService>(pub Arc<T>);
                     impl<
                         T: RaftService,
-                    > tonic::server::UnaryService<super::SendFullSnapshotRequest>
+                    > tonic::server::UnaryService<super::SendFullSnapshotReq>
                     for SendFullSnapshotSvc<T> {
-                        type Response = super::SendFullSnapshotResponse;
+                        type Response = super::SendFullSnapshotRsp;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::SendFullSnapshotRequest>,
+                            request: tonic::Request<super::SendFullSnapshotReq>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -465,16 +465,16 @@ pub mod raft_service_server {
                 "/raft.RaftService/Vote" => {
                     #[allow(non_camel_case_types)]
                     struct VoteSvc<T: RaftService>(pub Arc<T>);
-                    impl<T: RaftService> tonic::server::UnaryService<super::VoteRequest>
+                    impl<T: RaftService> tonic::server::UnaryService<super::VoteReq>
                     for VoteSvc<T> {
-                        type Response = super::VoteResponse;
+                        type Response = super::VoteRsp;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::VoteRequest>,
+                            request: tonic::Request<super::VoteReq>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).vote(request).await };

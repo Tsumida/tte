@@ -13,10 +13,14 @@ futures = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 async-trait = { workspace = true }
+anyhow = { workspace = true }
 getset = { workspace = true }
 thiserror = { workspace = true }
 byteorder = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true}
 
 # use fork in https://github.com/Tsumida/openraft/tree/main
 openraft = { workspace = true }

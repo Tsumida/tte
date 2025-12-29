@@ -58,14 +58,14 @@ pub trait OrderRouter {
     fn route_key(&self) -> Option<&oms::TradePair>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 enum CmdFlow {
     TradeCmd(oms::TradeCmd),
     MatchResult(oms::BatchMatchResult),
 }
 
 // refactor: 这个类型字段起来很麻烦;
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct OMSCmd {
     cmd: CmdFlow,
     seq_id: u64,
