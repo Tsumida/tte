@@ -236,6 +236,7 @@ where
         Ok(())
     }
 
+    // 删除[0, log_id]的日志
     async fn purge(&mut self, log_id: LogIdOf<C>) -> Result<(), io::Error> {
         tracing::debug!("delete_log: [0, {:?}]", log_id);
 

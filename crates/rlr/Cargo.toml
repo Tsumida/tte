@@ -21,6 +21,7 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true}
+uuid = { workspace = true, features = ["v4"] }
 
 # use fork in https://github.com/Tsumida/openraft/tree/main
 openraft = { workspace = true }

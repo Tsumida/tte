@@ -17,5 +17,9 @@ openraft::declare_raft_types!(
     pub AppTypeConfig:
         D = AppEntry,
         R = AppResponse,
+        // Use standard raft leader-id semantics so committed leader-id is just `term`,
+        // which matches the protobuf types used for network transport in this crate.
+        LeaderId = openraft::impls::leader_id_std::LeaderId<Self>,
         NodeId = AppNodeId,
+        Node = openraft::impls::BasicNode,
 );
