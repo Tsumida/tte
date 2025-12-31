@@ -2,12 +2,13 @@
 // test RlrNetwork + RlrStorage + mem kv cache
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::path::Path;
     use std::sync::Arc;
 
-    use crate::node::AppStateMachineHandler;
-    use crate::storage;
+    use crate::node::{AppStateMachine, AppStateMachineHandler};
     use crate::storage::RlrLogStore;
+    use crate::storage::{self};
     use crate::types::AppTypeConfig;
     use openraft::testing::log::{StoreBuilder, Suite};
     use openraft::{RaftTypeConfig, StorageError};
@@ -18,9 +19,57 @@ mod tests {
 
     struct TestSuiteBuilder {}
 
+    #[derive(Default)]
+    struct HashMapInner {
+        map: HashMap<String, String>,
+    }
+
+    impl Into<Vec<u8>> for HashMapInner {
+        fn into(self) -> Vec<u8> {
+            serde_json::to_vec(&self.map).unwrap()
+        }
+    }
+
+    impl From<Vec<u8>> for HashMapInner {
+        fn from(data: Vec<u8>) -> Self {
+            let map: HashMap<String, String> = serde_json::from_slice(&data).unwrap();
+            HashMapInner { map }
+        }
+    }
+
+    impl AppStateMachine for HashMapInner {
+        fn apply(
+            &mut self,
+            req: &crate::types::AppStateMachineInput,
+        ) -> anyhow::Result<crate::types::AppStateMachineOutput> {
+            let key = serde_json::from_slice::<String>(&req.0)?;
+            self.map.insert(key.clone(), key.clone());
+            Ok(crate::types::AppStateMachineOutput(b"ok".to_vec()))
+        }
+
+        fn recover(
+            &mut self,
+            snapshot: &openraft::alias::SnapshotDataOf<AppTypeConfig>,
+        ) -> anyhow::Result<()> {
+            let data: HashMap<String, String> = serde_json::from_slice(&snapshot.get_ref())?;
+
+            self.map = data;
+            Ok(())
+        }
+
+        fn take_snapshot(&self) -> Vec<u8> {
+            serde_json::to_vec(&self.map).unwrap()
+        }
+
+        fn from_snapshot(data: Vec<u8>) -> Self {
+            let map: HashMap<String, String> = serde_json::from_slice(&data).unwrap();
+            HashMapInner { map }
+        }
+    }
+
     async fn new_testee<C, P: AsRef<Path>>(
         db_path: P,
-    ) -> Result<(RlrLogStore<C>, AppStateMachineHandler), io::Error>
+    ) -> Result<(RlrLogStore<C>, AppStateMachineHandler<HashMapInner>), io::Error>
     where
         C: RaftTypeConfig,
     {
@@ -39,21 +88,52 @@ mod tests {
         let db = DB::open_cf_descriptors(&db_opts, db_path, cfs).map_err(io::Error::other)?;
         let db = Arc::new(db);
 
-        let rlrStorage = RlrLogStore::new(db.clone());
-        let mut appSm = AppStateMachineHandler::new(db_path.to_path_buf().join("snapshots"));
-        // recover if needed
-        // todo: AppStateMachine.recover()
+        let rlr_storage = RlrLogStore::new(db.clone());
+        let snapshot_dir = db_path.to_path_buf().join("snapshots");
 
-        Ok((rlrStorage, appSm))
+        // create snapshot dir if not exists
+        if !snapshot_dir.exists() {
+            tokio::fs::create_dir_all(&snapshot_dir).await?;
+        }
+
+        let app_statemachine = AppStateMachineHandler::new(snapshot_dir.clone());
+        // let ssm = DefaultSnapshotManager::new("test", snapshot_dir);
+        // match ssm.load_latest_snapshot().await {
+        //     Ok(Some(snap)) => {
+        //         app_statemachine
+        //             .install_snapshot(&snap.meta, snap.snapshot)
+        //             .await?;
+        //     }
+        //     Ok(None) => {
+        //         tracing::info!("no snapshot found");
+        //     }
+        //     Err(e) => {
+        //         return Err(io::Error::new(
+        //             io::ErrorKind::Other,
+        //             format!("load snapshot error: {}", e),
+        //         ));
+        //     }
+        // }
+
+        Ok((rlr_storage, app_statemachine))
     }
 
-    impl StoreBuilder<AppTypeConfig, RlrLogStore<AppTypeConfig>, AppStateMachineHandler, TempDir>
-        for TestSuiteBuilder
+    impl
+        StoreBuilder<
+            AppTypeConfig,
+            RlrLogStore<AppTypeConfig>,
+            AppStateMachineHandler<HashMapInner>,
+            TempDir,
+        > for TestSuiteBuilder
     {
         async fn build(
             &self,
         ) -> Result<
-            (TempDir, RlrLogStore<AppTypeConfig>, AppStateMachineHandler),
+            (
+                TempDir,
+                RlrLogStore<AppTypeConfig>,
+                AppStateMachineHandler<HashMapInner>,
+            ),
             StorageError<AppTypeConfig>,
         > {
             // create a temp dir in WORKING_DIR/tmp
