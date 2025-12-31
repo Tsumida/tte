@@ -1,20 +1,22 @@
-//! Copy from https://github.com/databendlabs/openraft/blob/main/examples/rocksstore/src/log_store.rs
+//! source from https://github.com/databendlabs/openraft/blob/main/examples/rocksstore/src/log_store.rs
 
-use std::error::Error;
 use std::fmt::Debug;
 use std::io;
+use std::io::Cursor;
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use byteorder::BigEndian;
-use byteorder::ReadBytesExt;
-use byteorder::WriteBytesExt;
 use meta::StoreMeta;
 use openraft::LogState;
+use openraft::Membership;
 use openraft::OptionalSend;
 use openraft::RaftLogReader;
+use openraft::RaftSnapshotBuilder;
 use openraft::RaftTypeConfig;
+use openraft::Snapshot;
 use openraft::TokioRuntime;
 use openraft::alias::EntryOf;
 use openraft::alias::LogIdOf;
@@ -26,12 +28,17 @@ use rocksdb::ColumnFamily;
 use rocksdb::DB;
 use rocksdb::Direction;
 use serde_json;
+use tokio::fs;
 use tokio::task::spawn_blocking;
+use tracing::instrument;
 
-const CF_META: &'static str = "meta";
-const CF_LOGS: &'static str = "logs";
-const CF_PURGE_ID: &'static str = "last_purged_log_id";
-const CF_VOTE: &'static str = "vote";
+use crate::types::AppTypeConfig;
+use crate::util::{bin2id, err_read_logs, id2bin};
+
+pub(crate) const CF_META: &'static str = "meta";
+pub(crate) const CF_LOGS: &'static str = "logs";
+pub(crate) const CF_PURGE_ID: &'static str = "last_purged_log_id";
+pub(crate) const CF_VOTE: &'static str = "vote";
 
 #[derive(Debug, Clone)]
 pub struct RlrLogStore<C>
@@ -51,6 +58,10 @@ where
             .expect("column family `meta` not found");
         db.cf_handle(CF_LOGS)
             .expect("column family `logs` not found");
+        db.cf_handle(CF_PURGE_ID)
+            .expect("column family `last_purged_log_id` not found");
+        db.cf_handle(CF_VOTE)
+            .expect("column family `vote` not found");
 
         Self {
             db,
@@ -107,9 +118,9 @@ where
         range: RB,
     ) -> Result<Vec<C::Entry>, io::Error> {
         let start = match range.start_bound() {
-            std::ops::Bound::Included(x) => id_to_bin(*x),
-            std::ops::Bound::Excluded(x) => id_to_bin(*x + 1),
-            std::ops::Bound::Unbounded => id_to_bin(0),
+            std::ops::Bound::Included(x) => id2bin(*x),
+            std::ops::Bound::Excluded(x) => id2bin(*x + 1),
+            std::ops::Bound::Unbounded => id2bin(0),
         };
 
         let mut res = Vec::new();
@@ -119,14 +130,14 @@ where
             rocksdb::IteratorMode::From(&start, Direction::Forward),
         );
         for item_res in it {
-            let (id, val) = item_res.map_err(read_logs_err)?;
+            let (id, val) = item_res.map_err(err_read_logs)?;
 
-            let id = bin_to_id(&id);
+            let id = bin2id(&id);
             if !range.contains(&id) {
                 break;
             }
 
-            let entry: EntryOf<C> = serde_json::from_slice(&val).map_err(read_logs_err)?;
+            let entry: EntryOf<C> = serde_json::from_slice(&val).map_err(err_read_logs)?;
 
             assert_eq!(id, entry.index());
 
@@ -155,9 +166,9 @@ where
         let last_log_id = match last {
             None => None,
             Some(res) => {
-                let (_log_index, entry_bytes) = res.map_err(read_logs_err)?;
+                let (_log_index, entry_bytes) = res.map_err(err_read_logs)?;
                 let ent =
-                    serde_json::from_slice::<EntryOf<C>>(&entry_bytes).map_err(read_logs_err)?;
+                    serde_json::from_slice::<EntryOf<C>>(&entry_bytes).map_err(err_read_logs)?;
                 Some(ent.log_id())
             }
         };
@@ -198,7 +209,7 @@ where
         I: IntoIterator<Item = EntryOf<C>> + Send,
     {
         for entry in entries {
-            let id = id_to_bin(entry.index());
+            let id = id2bin(entry.index());
             self.db
                 .put_cf(
                     self.cf_logs(),
@@ -226,8 +237,8 @@ where
     async fn truncate(&mut self, log_id: LogIdOf<C>) -> Result<(), io::Error> {
         tracing::debug!("truncate: [{:?}, +oo)", log_id);
 
-        let from = id_to_bin(log_id.index());
-        let to = id_to_bin(u64::MAX);
+        let from = id2bin(log_id.index());
+        let to = id2bin(u64::MAX);
         self.db
             .delete_range_cf(self.cf_logs(), &from, &to)
             .map_err(|e| io::Error::other(e.to_string()))?;
@@ -245,8 +256,8 @@ where
         // Therefore, there is no need to do it in a transaction.
         self.put_meta::<meta::LastPurged>(&log_id)?;
 
-        let from = id_to_bin(0);
-        let to = id_to_bin(log_id.index() + 1);
+        let from = id2bin(0);
+        let to = id2bin(log_id.index() + 1);
         self.db
             .delete_range_cf(self.cf_logs(), &from, &to)
             .map_err(|e| io::Error::other(e.to_string()))?;
@@ -256,10 +267,185 @@ where
     }
 }
 
-/// Metadata of a raft-store.
-///
-/// In raft, except logs and state machine, the store also has to store several piece of metadata.
-/// This sub mod defines the key-value pairs of these metadata.
+// 管理本地磁盘的快照
+trait SnapshotManagerAPI {
+    async fn dump_snapshot(&mut self, snapshot: &Snapshot<AppTypeConfig>) -> Result<(), io::Error>;
+
+    async fn get_latest_snapshot_path(&self) -> anyhow::Result<Option<PathBuf>>;
+
+    async fn load_latest_snapshot(&mut self) -> anyhow::Result<Option<Snapshot<AppTypeConfig>>>;
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct innerSnapshot {
+    data: Vec<u8>,
+    membership: Membership<AppTypeConfig>,
+    membership_log_id: Option<openraft::alias::LogIdOf<AppTypeConfig>>,
+    last_applied_log_id: Option<openraft::alias::LogIdOf<AppTypeConfig>>,
+}
+
+impl From<Snapshot<AppTypeConfig>> for innerSnapshot {
+    fn from(snap: Snapshot<AppTypeConfig>) -> Self {
+        innerSnapshot {
+            data: snap.snapshot.get_ref().clone(),
+            membership: snap.meta.last_membership.membership().clone(),
+            membership_log_id: snap.meta.last_membership.log_id().clone(),
+            last_applied_log_id: snap.meta.last_log_id,
+        }
+    }
+}
+
+impl Into<Snapshot<AppTypeConfig>> for innerSnapshot {
+    fn into(self) -> Snapshot<AppTypeConfig> {
+        Snapshot {
+            meta: openraft::SnapshotMeta {
+                snapshot_id: format!("ss{}", uuid::Uuid::new_v4()),
+                last_log_id: self.last_applied_log_id,
+                last_membership: openraft::StoredMembership::new(
+                    self.membership_log_id,
+                    self.membership,
+                ),
+            },
+            snapshot: Cursor::new(self.data),
+        }
+    }
+}
+
+// 快照管理器, 管理本地磁盘的快照文件
+// 快照文件名格式 "snapshot_{name}_{log_id:014}_{ts:ms}", 是完全有序的
+#[derive(Debug, Clone)]
+struct DefaultSnapshotManager {
+    name: &'static str,
+    snapshot_dir: PathBuf,
+}
+
+impl DefaultSnapshotManager {
+    pub fn new(name: &'static str, snapshot_dir: impl AsRef<Path>) -> Self {
+        Self {
+            name: if name != "" { name } else { "default" },
+            snapshot_dir: snapshot_dir.as_ref().to_path_buf(),
+        }
+    }
+}
+
+impl SnapshotManagerAPI for DefaultSnapshotManager {
+    #[instrument(level = "info", skip_all)]
+    async fn dump_snapshot(&mut self, snapshot: &Snapshot<AppTypeConfig>) -> Result<(), io::Error> {
+        let now_in_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let last_applied_log_id = snapshot.meta.last_log_id().map_or(0, |l| l.index());
+        let snapshot_name = format!(
+            "snapshot_{}_{:014}_{}",
+            self.name, last_applied_log_id, now_in_ms
+        );
+        let snapshot_path = self.snapshot_dir.join(&snapshot_name);
+        // create_dir and dump snapshot
+        tokio::fs::create_dir_all(&self.snapshot_dir).await?;
+
+        // todo: 高效序列化
+        let buf = serde_json::to_vec(&innerSnapshot::from(snapshot.clone()))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        tokio::fs::write(&snapshot_path, buf).await?;
+        tracing::info!(
+            "dump_snapshot at: {}, last_applied_log_id: {:?}",
+            snapshot_path.display(),
+            last_applied_log_id
+        );
+        Ok(())
+    }
+
+    async fn get_latest_snapshot_path(&self) -> anyhow::Result<Option<PathBuf>> {
+        let mut dir = fs::read_dir(&self.snapshot_dir).await?;
+        let mut snapshots: Vec<PathBuf> = Vec::new();
+        let prefix = format!("snapshot_{}_", self.name);
+
+        while let Some(entry) = dir.next_entry().await? {
+            let path = entry.path();
+
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            if name.starts_with(&prefix) {
+                snapshots.push(path);
+            }
+        }
+
+        snapshots.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        Ok(snapshots.pop())
+    }
+
+    #[instrument(level = "info", skip_all)]
+    async fn load_latest_snapshot(&mut self) -> anyhow::Result<Option<Snapshot<AppTypeConfig>>> {
+        if let Some(path) = self.get_latest_snapshot_path().await? {
+            tracing::debug!("load snapshot from: {}", path.display());
+            let data = tokio::fs::read(&path).await?;
+            let inner_snapshot: innerSnapshot = serde_json::from_slice(&data)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+            Ok(Some(inner_snapshot.into()))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+pub struct AppSnapshotBuilder<C: RaftTypeConfig> {
+    _phantom: std::marker::PhantomData<C>,
+    membership: Membership<C>,
+    membership_log_id: Option<openraft::alias::LogIdOf<C>>,
+    last_applied_log_id: Option<openraft::alias::LogIdOf<C>>,
+    data: Vec<u8>,
+    db_path: PathBuf,
+}
+
+impl AppSnapshotBuilder<AppTypeConfig> {
+    pub(crate) fn new(
+        snapshot_dir: PathBuf,
+        data: Vec<u8>,
+        membership: Membership<AppTypeConfig>,
+        membership_log_id: Option<openraft::alias::LogIdOf<AppTypeConfig>>,
+        last_applied_log_id: Option<openraft::alias::LogIdOf<AppTypeConfig>>,
+    ) -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+            db_path: snapshot_dir,
+            data,
+            membership,
+            membership_log_id,
+            last_applied_log_id,
+        }
+    }
+}
+
+impl RaftSnapshotBuilder<AppTypeConfig> for AppSnapshotBuilder<AppTypeConfig> {
+    async fn build_snapshot(&mut self) -> Result<Snapshot<AppTypeConfig>, std::io::Error> {
+        let rand_snapshot_id = format!("ss{}", uuid::Uuid::new_v4());
+        let snapshot = Snapshot {
+            meta: openraft::SnapshotMeta {
+                snapshot_id: rand_snapshot_id,
+                last_log_id: self.last_applied_log_id,
+                last_membership: openraft::StoredMembership::new(
+                    self.membership_log_id,
+                    self.membership.clone(),
+                ),
+            },
+            snapshot: Cursor::new(self.data.clone()),
+        };
+
+        // dump snapshot
+        DefaultSnapshotManager::new("test", self.db_path.clone())
+            .dump_snapshot(&snapshot)
+            .await?;
+
+        Ok(snapshot)
+    }
+}
+
 mod meta {
     use openraft::RaftTypeConfig;
     use openraft::alias::LogIdOf;
@@ -297,20 +483,4 @@ mod meta {
         const KEY: &'static str = CF_VOTE;
         type Value = VoteOf<C>;
     }
-}
-
-/// converts an id to a byte vector for storing in the database.
-/// Note that we're using big endian encoding to ensure correct sorting of keys
-fn id_to_bin(id: u64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(8);
-    buf.write_u64::<BigEndian>(id).unwrap();
-    buf
-}
-
-fn bin_to_id(buf: &[u8]) -> u64 {
-    (&buf[0..8]).read_u64::<BigEndian>().unwrap()
-}
-
-fn read_logs_err(e: impl Error + 'static) -> io::Error {
-    io::Error::other(e.to_string())
 }

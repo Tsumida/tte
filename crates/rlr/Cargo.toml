@@ -22,6 +22,7 @@ tempfile = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true}
 uuid = { workspace = true, features = ["v4"] }
+tracing-subscriber = { workspace = true }
 
 # use fork in https://github.com/Tsumida/openraft/tree/main
 openraft = { workspace = true }
