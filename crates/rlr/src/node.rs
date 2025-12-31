@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Cursor, path::PathBuf, sync::Arc};
+use std::{io::Cursor, path::PathBuf, sync::Arc};
 
 use futures::TryStreamExt;
 use openraft::{
@@ -8,15 +8,13 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 
 use crate::{
-    storage::{AppSnapshotBuilder, DefaultSnapshotManager, SnapshotManagerAPI},
+    storage::AppSnapshotBuilder,
     types::{AppStateMachineInput, AppStateMachineOutput, AppTypeConfig},
 };
 
 pub trait AppStateMachine: Default + Send + Sync + 'static {
     // Atomic apply one entry, if failed, state machine keep unchanged.
     fn apply(&mut self, req: &AppStateMachineInput) -> anyhow::Result<AppStateMachineOutput>;
-    // Install_from_snapshot and then replay logs after snapshot.last_log_id
-    fn recover(&mut self, snapshot: &SnapshotDataOf<AppTypeConfig>) -> anyhow::Result<()>;
     fn take_snapshot(&self) -> Vec<u8>;
     fn from_snapshot(data: Vec<u8>) -> Self;
 }

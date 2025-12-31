@@ -47,16 +47,6 @@ mod tests {
             Ok(crate::types::AppStateMachineOutput(b"ok".to_vec()))
         }
 
-        fn recover(
-            &mut self,
-            snapshot: &openraft::alias::SnapshotDataOf<AppTypeConfig>,
-        ) -> anyhow::Result<()> {
-            let data: HashMap<String, String> = serde_json::from_slice(&snapshot.get_ref())?;
-
-            self.map = data;
-            Ok(())
-        }
-
         fn take_snapshot(&self) -> Vec<u8> {
             serde_json::to_vec(&self.map).unwrap()
         }
@@ -119,7 +109,11 @@ mod tests {
             StorageError<AppTypeConfig>,
         > {
             // create a temp dir in WORKING_DIR/tmp
-            let td = TempDir::new_in("./tmp").unwrap();
+            let dir = Path::new("tmp");
+            if !dir.exists() {
+                tokio::fs::create_dir_all(dir).await.unwrap();
+            }
+            let td = TempDir::new_in(dir).unwrap();
             let (log_store, sm) = new_testee(td.path()).await.unwrap();
             Ok((td, log_store, sm))
         }
