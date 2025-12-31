@@ -97,24 +97,6 @@ mod tests {
         }
 
         let app_statemachine = AppStateMachineHandler::new(snapshot_dir.clone());
-        // let ssm = DefaultSnapshotManager::new("test", snapshot_dir);
-        // match ssm.load_latest_snapshot().await {
-        //     Ok(Some(snap)) => {
-        //         app_statemachine
-        //             .install_snapshot(&snap.meta, snap.snapshot)
-        //             .await?;
-        //     }
-        //     Ok(None) => {
-        //         tracing::info!("no snapshot found");
-        //     }
-        //     Err(e) => {
-        //         return Err(io::Error::new(
-        //             io::ErrorKind::Other,
-        //             format!("load snapshot error: {}", e),
-        //         ));
-        //     }
-        // }
-
         Ok((rlr_storage, app_statemachine))
     }
 
@@ -145,12 +127,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_correctness() {
-        tracing_subscriber::fmt()
-            .with_file(true)
-            .with_line_number(true)
-            .with_env_filter("info")
-            .with_thread_ids(true)
-            .init();
+        // tracing_subscriber::fmt()
+        //     .with_file(true)
+        //     .with_line_number(true)
+        //     .with_env_filter("info")
+        //     .with_thread_ids(true)
+        //     .init();
 
         let builder = TestSuiteBuilder {};
         match Suite::test_all(builder).await {

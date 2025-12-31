@@ -27,13 +27,12 @@ struct RaftMetaData {
 }
 
 pub struct AppStateMachineHandler<S: AppStateMachine> {
-    // 更稳妥做法: 把Data和meta用同一个RwLock容器
-    // 防止死锁，要求先拿meta, 后拿data
-    raft_meta: Arc<RwLock<RaftMetaData>>,
-    // data: Arc<RwLock<HashMap<String, String>>>, // todo: Box<dyn AppStateMachine>
-    data: Arc<RwLock<S>>,
-    current_snapshot: Option<Snapshot<AppTypeConfig>>,
     snapshot_dir: PathBuf, // 本地存放快照文件
+    // 更稳妥做法: 把Data和meta用同一个RwLock容器
+    // 加锁顺序: meta -> data -> current_snapshot
+    raft_meta: Arc<RwLock<RaftMetaData>>,
+    data: Arc<RwLock<S>>,
+    current_snapshot: Arc<RwLock<Option<Snapshot<AppTypeConfig>>>>,
 }
 
 impl<S: AppStateMachine> AppStateMachineHandler<S> {
@@ -44,7 +43,7 @@ impl<S: AppStateMachine> AppStateMachineHandler<S> {
                 last_applied_log_id: None,
                 effective_membership: openraft::StoredMembership::new(None, Membership::default()),
             })),
-            current_snapshot: None,
+            current_snapshot: Arc::new(RwLock::new(None)),
             snapshot_dir,
         }
     }
@@ -129,22 +128,15 @@ impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHand
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
-        let (data, membership, membership_log_id, last_applied_log_id) = {
-            let raft_meta = self.raft_meta.read().await;
-            let inner = self.data.read().await;
-            (
-                inner.take_snapshot(),
-                raft_meta.effective_membership.membership().clone(),
-                raft_meta.effective_membership.log_id().clone(), // 注意, 此数据是membership entry对应的log id，并非最新applied id
-                raft_meta.last_applied_log_id,
-            )
-        };
+        let raft_meta = self.raft_meta.read().await;
+        let inner = self.data.read().await;
         AppSnapshotBuilder::new(
             self.snapshot_dir.clone(),
-            data,
-            membership,
-            membership_log_id,
-            last_applied_log_id,
+            inner.take_snapshot(),
+            raft_meta.effective_membership.membership().clone(),
+            raft_meta.effective_membership.log_id().clone(), // 注意, 此数据是membership entry对应的log id，并非最新applied id
+            raft_meta.last_applied_log_id,
+            self.current_snapshot.clone(),
         )
     }
 
@@ -161,15 +153,16 @@ impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHand
     ) -> Result<(), std::io::Error> {
         // 更新raft meta
         let mut raft_meta = self.raft_meta.write().await;
+        let mut data = self.data.write().await;
+        let mut current_snapshot = self.current_snapshot.write().await;
+
+        // 元数据
         raft_meta.last_applied_log_id = meta.last_log_id;
         raft_meta.effective_membership = meta.last_membership.clone();
-
         // 更新业务状态机
-        let mut data = self.data.write().await;
         *data = <S as AppStateMachine>::from_snapshot(snapshot.get_ref().to_vec());
-
         // 更新快照
-        self.current_snapshot = Some(Snapshot {
+        *current_snapshot = Some(Snapshot {
             meta: meta.clone(),
             snapshot,
         });
@@ -180,6 +173,6 @@ impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHand
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<openraft::storage::Snapshot<AppTypeConfig>>, std::io::Error> {
-        Ok(self.current_snapshot.clone())
+        Ok(self.current_snapshot.read().await.clone())
     }
 }

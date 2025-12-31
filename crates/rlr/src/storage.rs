@@ -29,6 +29,7 @@ use rocksdb::DB;
 use rocksdb::Direction;
 use serde_json;
 use tokio::fs;
+use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
 use tracing::instrument;
 
@@ -408,6 +409,7 @@ pub struct AppSnapshotBuilder<C: RaftTypeConfig> {
     membership_log_id: Option<openraft::alias::LogIdOf<C>>,
     last_applied_log_id: Option<openraft::alias::LogIdOf<C>>,
     data: Vec<u8>,
+    current_snapshot: Arc<RwLock<Option<Snapshot<C>>>>,
     db_path: PathBuf,
 }
 
@@ -418,19 +420,22 @@ impl AppSnapshotBuilder<AppTypeConfig> {
         membership: Membership<AppTypeConfig>,
         membership_log_id: Option<openraft::alias::LogIdOf<AppTypeConfig>>,
         last_applied_log_id: Option<openraft::alias::LogIdOf<AppTypeConfig>>,
+        current_snapshot: Arc<RwLock<Option<Snapshot<AppTypeConfig>>>>,
     ) -> Self {
         Self {
             _phantom: std::marker::PhantomData,
-            db_path: snapshot_dir,
             data,
             membership,
             membership_log_id,
             last_applied_log_id,
+            current_snapshot,
+            db_path: snapshot_dir,
         }
     }
 }
 
 impl RaftSnapshotBuilder<AppTypeConfig> for AppSnapshotBuilder<AppTypeConfig> {
+    // 注意, build_snapshot()是异步调用的，会更新 current_snapshot变量
     async fn build_snapshot(&mut self) -> Result<Snapshot<AppTypeConfig>, std::io::Error> {
         let rand_snapshot_id = format!("ss{}", uuid::Uuid::new_v4());
         let snapshot = Snapshot {
@@ -444,6 +449,11 @@ impl RaftSnapshotBuilder<AppTypeConfig> for AppSnapshotBuilder<AppTypeConfig> {
             },
             snapshot: Cursor::new(self.data.clone()),
         };
+
+        // 更新 current_snapshot
+        {
+            *self.current_snapshot.write().await = Some(snapshot.clone());
+        }
 
         DefaultSnapshotManager::new("test", self.db_path.clone())
             .dump_snapshot(&snapshot)
