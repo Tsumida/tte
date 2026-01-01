@@ -30,4 +30,5 @@ rdkafka.workspace = true
 
 tte-core = { path = "../core" }
 tte-infra = { path = "../infra" }
+tte-rlr = { path = "../rlr" }
 tte-sequencer = { path = "../sequencer" }

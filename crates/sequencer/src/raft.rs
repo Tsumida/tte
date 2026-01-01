@@ -6,13 +6,57 @@ use std::{
 
 use crate::api::SequenceEntry;
 use futures::TryStreamExt;
+use getset::Getters;
 use tokio::sync::oneshot;
 use tte_rlr::{
     AppNodeId, AppStateMachine, AppStateMachineHandler, AppStateMachineInput, AppTypeConfig,
     BasicNode, Raft, RaftStateMachine, Rlr, new_rlr,
 };
 
-// todo: Input, Output用不同类型
+#[derive(Clone, Debug, Getters)]
+pub struct RaftSequencerConfig {
+    #[getset(get = "pub")]
+    db_path: String,
+    #[getset(get = "pub")]
+    node_id: AppNodeId,
+    #[getset(get = "pub")]
+    nodes: HashMap<AppNodeId, BasicNode>,
+}
+
+impl RaftSequencerConfig {
+    // 从环境变量加载配置
+    //  RAFT_NODE_ID=1
+    //  RAFT_NODES="1=127.0.0.1:7001,2=127.0.0.1:7002,3=127.0.0.1:7003"
+    //  RAFT_DB_PATH="./data/raft_node_1"
+    pub fn from_env() -> Self {
+        let node_id: AppNodeId = std::env::var("RAFT_NODE_ID")
+            .expect("RAFT_NODE_ID is not set")
+            .parse()
+            .expect("Invalid RAFT_NODE_ID");
+
+        let nodes_str = std::env::var("RAFT_NODES").expect("RAFT_NODES is not set");
+        let mut nodes = HashMap::new();
+        for node_pair in nodes_str.split(',') {
+            let mut parts = node_pair.splitn(2, '=');
+            let id: AppNodeId = parts
+                .next()
+                .expect("Invalid RAFT_NODES format")
+                .parse()
+                .expect("Invalid node ID in RAFT_NODES");
+            let addr = parts.next().expect("Invalid RAFT_NODES format").to_string();
+            nodes.insert(id, BasicNode::new(addr));
+        }
+
+        let db_path = std::env::var("RAFT_DB_PATH").unwrap_or_else(|_| "./data/raft_node".into());
+
+        RaftSequencerConfig {
+            db_path,
+            node_id,
+            nodes,
+        }
+    }
+}
+
 pub struct RaftSequencer<S: AppStateMachine, E: Into<AppStateMachineInput> + SequenceEntry + Clone>
 {
     // 采用log_id作为seq_id

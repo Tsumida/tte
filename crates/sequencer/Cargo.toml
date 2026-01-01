@@ -13,6 +13,7 @@ tonic.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 futures.workspace = true
+getset.workspace = true
 
 tracing.workspace = true
 opentelemetry.workspace = true

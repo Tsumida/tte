@@ -1,7 +1,7 @@
 //#![allow(dead_code)]
 #![deny(clippy::unwrap_used)]
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 
 use rdkafka::Message;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -14,8 +14,9 @@ use tte_core::{
 
 use crate::orderbook::{OrderBook, OrderBookErr, OrderBookSnapshot, OrderBookSnapshotHandler};
 use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
-use tte_sequencer::api::SequenceEntry;
-use tte_sequencer::default::DefaultSequencer;
+use tte_rlr::AppStateMachineInput;
+use tte_sequencer::raft::RaftSequencerConfig;
+use tte_sequencer::{api::SequenceEntry, raft::RaftSequencer};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MatchCmd {
@@ -23,12 +24,19 @@ pub enum MatchCmd {
     MatchAdminCmd(oms::MatchAdminCmd),
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CmdWrapper<T: Send + Sync + 'static> {
     inner: T,
     // crtical: 此seq_id只用于ME内部故障恢复和幂等
     seq_id: u64,
     prev_seq_id: u64,
     ts: u64,
+}
+
+impl Into<AppStateMachineInput> for CmdWrapper<MatchCmd> {
+    fn into(self) -> AppStateMachineInput {
+        AppStateMachineInput(serde_json::to_vec(&self).expect("serialize MatchCmd"))
+    }
 }
 
 impl<T> CmdWrapper<T>
@@ -75,6 +83,7 @@ unsafe impl Sync for MatchEngineService {}
 
 impl MatchEngineService {
     pub async fn run_match_engine(
+        raft_config: RaftSequencerConfig,
         trade_pair: TradePair,
         orderbook: OrderBook,
         producer_cfgs: HashMap<String, ProducerConfig>,
@@ -92,9 +101,15 @@ impl MatchEngineService {
             .get(&result_topic)
             .expect("missing match-engine producer config");
 
-        // todo: sequencer持久化恢复
-        let (sequencer, sequencer_sender, sequencer_receiver) =
-            DefaultSequencer::<CmdWrapper<MatchCmd>>::new(0, batch_size);
+        // let (sequencer, sequencer_sender, sequencer_receiver) =
+        //     DefaultSequencer::<CmdWrapper<MatchCmd>>::new(0, batch_size);
+        let (sequencer, sequencer_sender) = RaftSequencer::new(
+            *raft_config.node_id(),
+            Path::new(raft_config.db_path()),
+            raft_config.nodes(),
+        )
+        .await
+        .expect("create raft sequencer");
 
         let (match_result_sender, match_result_receiver) =
             mpsc::channel::<CmdWrapper<oms::BatchMatchResult>>(batch_size);
@@ -240,6 +255,7 @@ impl MatchReqConsumer {
     }
 }
 
+#[deprecated]
 struct ApplyThread {
     orderbook: OrderBook,
     submit_receiver: SequencerReceiver,
