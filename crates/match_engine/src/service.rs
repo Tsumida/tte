@@ -14,7 +14,8 @@ use tte_core::{
 
 use crate::orderbook::{OrderBook, OrderBookErr, OrderBookSnapshot, OrderBookSnapshotHandler};
 use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
-use tte_sequencer::api::{DefaultSequencer, SequenceSetter};
+use tte_sequencer::api::SequenceEntry;
+use tte_sequencer::default::DefaultSequencer;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MatchCmd {
@@ -44,7 +45,7 @@ where
     }
 }
 
-impl<T> SequenceSetter for CmdWrapper<T>
+impl<T> SequenceEntry for CmdWrapper<T>
 where
     T: Send + Sync + 'static,
 {

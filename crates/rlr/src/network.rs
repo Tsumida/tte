@@ -1,6 +1,5 @@
 use crate::pbcode::raft as pb;
 use crate::types::{AppNodeId, AppTypeConfig};
-use async_trait::async_trait;
 use openraft::BasicNode;
 use openraft::OptionalSend;
 use openraft::Vote;
@@ -25,21 +24,48 @@ pub struct RlrNetworkFactory {
 }
 
 impl RlrNetworkFactory {
-    pub async fn new(nodes: &HashMap<AppNodeId, BasicNode>) -> Self {
+    pub async fn new(nodes: &HashMap<AppNodeId, BasicNode>) -> Result<Self, anyhow::Error> {
         let mut clients = HashMap::with_capacity(nodes.len());
 
         for (id, node) in nodes.iter() {
             let addr = normalize_http_addr(&node.addr);
             let endpoint = Endpoint::from_shared(addr).expect("invalid node address");
             // todo: allow retry due to bootstrap delay
-            // let channel = endpoint.connect_lazy();
-            let channel = endpoint.connect().await.expect("failed to connect");
-            clients.insert(*id, channel);
+
+            let mut channel = None;
+            {
+                for _ in 0..30 {
+                    match endpoint.connect().await {
+                        Ok(c) => {
+                            channel = Some(c);
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to connect to node {} at {}, retrying...: {}",
+                                id,
+                                node.addr,
+                                e
+                            );
+                            tokio::time::sleep(Duration::from_millis(2000)).await;
+                            continue;
+                        }
+                    }
+                }
+            }
+            if channel.is_none() {
+                return Err(anyhow::anyhow!(
+                    "failed to connect to node {} at {} after retries",
+                    id,
+                    node.addr
+                ));
+            }
+            clients.insert(*id, channel.unwrap());
         }
 
-        Self {
+        Ok(Self {
             clients: Arc::new(clients),
-        }
+        })
     }
 }
 

@@ -1,12 +1,10 @@
-//!
-// test RlrNetwork + RlrStorage + mem kv cache
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::path::Path;
     use std::sync::Arc;
 
-    use crate::node::{AppStateMachine, AppStateMachineHandler};
+    use crate::state_machine::{AppStateMachine, AppStateMachineHandler};
     use crate::storage::RlrLogStore;
     use crate::storage::{self};
     use crate::types::AppTypeConfig;
@@ -15,7 +13,6 @@ mod tests {
     use rocksdb::{ColumnFamilyDescriptor, DB, Options};
     use tempfile::TempDir;
     use tokio::io;
-    use tracing_subscriber;
 
     struct TestSuiteBuilder {}
 

@@ -34,7 +34,7 @@ pub struct AppStateMachineHandler<S: AppStateMachine> {
 }
 
 impl<S: AppStateMachine> AppStateMachineHandler<S> {
-    pub(crate) fn new(snapshot_dir: PathBuf) -> Self {
+    pub fn new(snapshot_dir: PathBuf) -> Self {
         Self {
             data: Arc::new(RwLock::new(S::default())),
             raft_meta: Arc::new(RwLock::new(RaftMetaData {

@@ -11,6 +11,8 @@ path = "src/lib.rs"
 chrono.workspace = true
 tonic.workspace = true
 tokio.workspace = true
+anyhow.workspace = true
+futures.workspace = true
 
 tracing.workspace = true
 opentelemetry.workspace = true
@@ -22,3 +24,6 @@ opentelemetry-semantic-conventions.workspace = true
 tracing-appender.workspace = true
 opentelemetry-appender-tracing.workspace = true
 tonic-tracing-opentelemetry.workspace = true
+
+tte-core = { path = "../core" }
+tte-rlr = { path = "../rlr" }

@@ -18,7 +18,8 @@ use tte_core::precision;
 use tte_core::types::{BatchMatchResultTransfer, TradePair};
 use tte_core::{err_code, types};
 use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
-use tte_sequencer::api::{DefaultSequencer, SequenceSetter};
+use tte_sequencer::api::SequenceEntry;
+use tte_sequencer::default::DefaultSequencer;
 
 type InformSender = oneshot::Sender<Informer>;
 type InformReceiver = oneshot::Receiver<Informer>;
@@ -73,7 +74,7 @@ struct OMSCmd {
     ts: u64,
 }
 
-impl SequenceSetter for OMSCmd {
+impl SequenceEntry for OMSCmd {
     fn set_seq_id(&mut self, seq_id: u64, prev_seq_id: u64) {
         self.seq_id = seq_id;
         self.prev_seq_id = prev_seq_id;
