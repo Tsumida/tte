@@ -600,6 +600,49 @@ impl OrderBook {
             cancel_result: None,
         })
     }
+
+    pub fn handle_match_req(
+        &mut self,
+        batch_match_req: oms::BatchMatchRequest,
+    ) -> oms::BatchMatchResult {
+        let mut match_result_buffer = Vec::with_capacity(batch_match_req.cmds.len());
+        for cmd in batch_match_req.cmds {
+            let trade_id = cmd.trade_id;
+            let prev_trade_id = cmd.prev_trade_id;
+            let action =
+                oms::BizAction::from_i32(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
+            let result = self.process_trade_cmd(cmd);
+            match result {
+                Ok(r) => match r.action {
+                    oms::BizAction::FillOrder => {
+                        let fill_result = r.fill_result.as_ref().unwrap();
+                        let match_result =
+                            MatchResult::into_fill_result_pb(trade_id, prev_trade_id, fill_result);
+                        match_result_buffer.push(match_result);
+                    }
+                    oms::BizAction::CancelOrder => {
+                        match_result_buffer.push(MatchResult::into_cancel_result_pb(
+                            trade_id,
+                            prev_trade_id,
+                            r.cancel_result.as_ref().unwrap(),
+                        ));
+                    }
+                    _ => {}
+                },
+                Err(e) => match_result_buffer.push(MatchResult::into_err(
+                    trade_id,
+                    prev_trade_id,
+                    action,
+                    e.to_string(),
+                )),
+            }
+        }
+
+        oms::BatchMatchResult {
+            trade_pair: Some(self.trade_pair.clone()),
+            results: match_result_buffer,
+        }
+    }
 }
 
 impl OrderBookRequestHandler for OrderBook {

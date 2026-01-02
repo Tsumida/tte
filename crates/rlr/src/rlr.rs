@@ -17,6 +17,7 @@ pub async fn new_rlr<S: AppStateMachine>(
     node_id: u64,
     db_path: &std::path::Path,
     nodes: &HashMap<AppNodeId, BasicNode>,
+    state_machine: S,
 ) -> Result<Rlr, anyhow::Error> {
     let snapshot_dir = db_path.to_path_buf().join("snapshots");
     if !snapshot_dir.exists() {
@@ -48,7 +49,7 @@ pub async fn new_rlr<S: AppStateMachine>(
     let rlr_storage = RlrLogStore::new(db.clone());
 
     let app_statemachine: AppStateMachineHandler<S> =
-        AppStateMachineHandler::new(snapshot_dir.clone());
+        AppStateMachineHandler::new(snapshot_dir.clone(), state_machine);
 
     let network = network::RlrNetworkFactory::new(nodes).await?;
     let raft =

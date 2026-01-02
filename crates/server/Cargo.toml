@@ -7,6 +7,7 @@ edition = "2024"
 name = "mvp_server"
 path = "src/main.rs"
 
+
 [dependencies]
 tokio.workspace = true
 tonic.workspace = true
@@ -39,3 +40,4 @@ tte-infra = { path = "../infra" }
 tte-oms = { path = "../oms" }
 tte-ledger = { path = "../ledger" }
 tte-me = { path = "../match_engine" }
+tte-sequencer = { path = "../sequencer" }

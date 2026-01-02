@@ -9,14 +9,21 @@ use tracing::instrument;
 
 use crate::{
     storage::AppSnapshotBuilder,
-    types::{AppStateMachineInput, AppStateMachineOutput, AppTypeConfig},
+    types::{AppStateMachineOutput, AppTypeConfig},
 };
 
-pub trait AppStateMachine: Default + Send + Sync + 'static {
+pub trait AppStateMachine: Send + Sync + 'static {
+    type Input: for<'a> TryFrom<&'a <AppTypeConfig as RaftTypeConfig>::D> + Send + 'static;
+    type Output: TryInto<<AppTypeConfig as RaftTypeConfig>::R> + Send + 'static;
+
     // Atomic apply one entry, if failed, state machine keep unchanged.
-    fn apply(&mut self, req: &AppStateMachineInput) -> anyhow::Result<AppStateMachineOutput>;
+    fn apply(&mut self, req: Self::Input) -> anyhow::Result<Self::Output>;
+
+    // todo: replace with TryFrom<&[u8]> and TryInto<Vec<u8>>
     fn take_snapshot(&self) -> Vec<u8>;
-    fn from_snapshot(data: Vec<u8>) -> Self;
+    fn from_snapshot(data: Vec<u8>) -> Result<Self, anyhow::Error>
+    where
+        Self: Sized;
 }
 
 struct RaftMetaData {
@@ -34,9 +41,9 @@ pub struct AppStateMachineHandler<S: AppStateMachine> {
 }
 
 impl<S: AppStateMachine> AppStateMachineHandler<S> {
-    pub fn new(snapshot_dir: PathBuf) -> Self {
+    pub fn new(snapshot_dir: PathBuf, s: S) -> Self {
         Self {
-            data: Arc::new(RwLock::new(S::default())),
+            data: Arc::new(RwLock::new(s)),
             raft_meta: Arc::new(RwLock::new(RaftMetaData {
                 last_applied_log_id: None,
                 effective_membership: openraft::StoredMembership::new(None, Membership::default()),
@@ -96,18 +103,28 @@ impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHand
             // the entry is ok to apply
             let rsp = match &entry.payload {
                 openraft::EntryPayload::Normal(input) => {
-                    // let s = String::from_utf8(data.0.clone()).unwrap();
-                    // let key = format!("{}", entry.log_id.index);
-                    // self.data.write().await.insert(key, s);
-                    match self.data.write().await.apply(input).map_err(|e| {
-                        tracing::error!("failed to apply entry: {}", e);
-                        std::io::Error::new(std::io::ErrorKind::Other, e)
-                    }) {
-                        Ok(r) => r,
-                        Err(e) => AppStateMachineOutput(
-                            format!("failed to apply entry: {}", e).into_bytes(),
-                        ),
-                    }
+                    // perf: 去掉这一步的反序列化
+                    let converted_input = <S::Input>::try_from(input).map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "failed to convert input",
+                        )
+                    })?;
+                    self.data
+                        .write()
+                        .await
+                        .apply(converted_input)
+                        .map_err(|e| {
+                            tracing::error!("failed to apply entry: {}", e);
+                            std::io::Error::new(std::io::ErrorKind::Other, e)
+                        })?
+                        .try_into()
+                        .map_err(|_| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "failed to convert output",
+                            )
+                        })?
                 }
                 openraft::EntryPayload::Membership(m) => {
                     self_meta.effective_membership =
@@ -158,7 +175,13 @@ impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHand
         raft_meta.last_applied_log_id = meta.last_log_id;
         raft_meta.effective_membership = meta.last_membership.clone();
         // 更新业务状态机
-        *data = <S as AppStateMachine>::from_snapshot(snapshot.get_ref().to_vec());
+        *data =
+            <S as AppStateMachine>::from_snapshot(snapshot.get_ref().to_vec()).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("failed to install snapshot: {}", e),
+                )
+            })?;
         // 更新快照
         *current_snapshot = Some(Snapshot {
             meta: meta.clone(),

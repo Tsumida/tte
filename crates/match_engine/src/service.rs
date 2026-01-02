@@ -1,76 +1,25 @@
 //#![allow(dead_code)]
 #![deny(clippy::unwrap_used)]
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::PathBuf};
 
 use rdkafka::Message;
 use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, info, instrument};
 
 use tte_core::{
     pbcode::oms::{self},
-    types::{BatchMatchReqTransfer, BatchMatchResultTransfer, MatchResult, TradePair},
+    types::{BatchMatchReqTransfer, BatchMatchResultTransfer, TradePair},
 };
 
-use crate::orderbook::{OrderBook, OrderBookErr, OrderBookSnapshot, OrderBookSnapshotHandler};
+use crate::{
+    egress::AllowAllEgressController,
+    orderbook::{OrderBook, OrderBookErr},
+    types::{CmdWrapper, MatchCmd, MatchResultReceiver, SequencerSender},
+};
 use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
-use tte_rlr::AppStateMachineInput;
-use tte_sequencer::raft::RaftSequencerConfig;
-use tte_sequencer::{api::SequenceEntry, raft::RaftSequencer};
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum MatchCmd {
-    MatchReq(oms::BatchMatchRequest),
-    MatchAdminCmd(oms::MatchAdminCmd),
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct CmdWrapper<T: Send + Sync + 'static> {
-    inner: T,
-    // crtical: 此seq_id只用于ME内部故障恢复和幂等
-    seq_id: u64,
-    prev_seq_id: u64,
-    ts: u64,
-}
-
-impl Into<AppStateMachineInput> for CmdWrapper<MatchCmd> {
-    fn into(self) -> AppStateMachineInput {
-        AppStateMachineInput(serde_json::to_vec(&self).expect("serialize MatchCmd"))
-    }
-}
-
-impl<T> CmdWrapper<T>
-where
-    T: Send + Sync + 'static,
-{
-    pub fn new(inner: T) -> Self {
-        CmdWrapper {
-            inner,
-            seq_id: 0,
-            prev_seq_id: 0,
-            ts: 0,
-        }
-    }
-}
-
-impl<T> SequenceEntry for CmdWrapper<T>
-where
-    T: Send + Sync + 'static,
-{
-    fn set_seq_id(&mut self, seq_id: u64, prev_seq_id: u64) {
-        self.seq_id = seq_id;
-        self.prev_seq_id = prev_seq_id;
-    }
-
-    fn set_ts(&mut self, ts: u64) {
-        self.ts = ts;
-    }
-}
-
-type SequencerSender = tokio::sync::mpsc::Sender<CmdWrapper<MatchCmd>>;
-type SequencerReceiver = tokio::sync::mpsc::Receiver<CmdWrapper<MatchCmd>>;
-type MatchResultSender = tokio::sync::mpsc::Sender<CmdWrapper<oms::BatchMatchResult>>;
-type MatchResultReceiver = tokio::sync::mpsc::Receiver<CmdWrapper<oms::BatchMatchResult>>;
+use tte_sequencer::raft::RaftSequencer;
+use tte_sequencer::raft::{RaftSequencerBuilder, RaftSequencerConfig};
 
 #[derive(Clone)]
 pub struct MatchEngineService {
@@ -85,13 +34,11 @@ impl MatchEngineService {
     pub async fn run_match_engine(
         raft_config: RaftSequencerConfig,
         trade_pair: TradePair,
-        orderbook: OrderBook,
+        orderbook: OrderBook, // todo: 从DB加载快照
         producer_cfgs: HashMap<String, ProducerConfig>,
         consumer_cfgs: HashMap<String, ConsumerConfig>,
     ) -> Result<(Self, Vec<JoinHandle<()>>), OrderBookErr> {
         let batch_size = 32;
-        // 发送到sequencer
-        // sequencer持久化结果发送
         let req_topic = format!("match_req_{}{}", trade_pair.base, trade_pair.quote);
         let result_topic = format!("match_result_{}{}", trade_pair.base, trade_pair.quote);
         let req_consumer_cfg = consumer_cfgs
@@ -101,20 +48,24 @@ impl MatchEngineService {
             .get(&result_topic)
             .expect("missing match-engine producer config");
 
-        // let (sequencer, sequencer_sender, sequencer_receiver) =
-        //     DefaultSequencer::<CmdWrapper<MatchCmd>>::new(0, batch_size);
-        let (sequencer, sequencer_sender) = RaftSequencer::new(
-            *raft_config.node_id(),
-            Path::new(raft_config.db_path()),
-            raft_config.nodes(),
-        )
-        .await
-        .expect("create raft sequencer");
-
         let (match_result_sender, match_result_receiver) =
             mpsc::channel::<CmdWrapper<oms::BatchMatchResult>>(batch_size);
+        let (req_send, req_recv) = tokio::sync::mpsc::channel::<CmdWrapper<MatchCmd>>(256);
 
-        let apply_thread = ApplyThread::new(orderbook, sequencer_receiver, match_result_sender);
+        let mut sequencer: RaftSequencer<
+            OrderBook,
+            CmdWrapper<MatchCmd>,
+            AllowAllEgressController,
+        > = RaftSequencerBuilder::new()
+            .with_node_id(*raft_config.node_id())
+            .with_db_path(PathBuf::from(raft_config.db_path()))
+            .with_nodes(raft_config.nodes().clone())
+            .with_request_receiver(req_recv)
+            .with_state_machine(orderbook)
+            .with_egress(AllowAllEgressController::new(match_result_sender))
+            .build()
+            .await
+            .expect("build sequencer");
 
         let match_result_producer = MatchResultProducerBuilder::new()
             .with_producer_cfg(result_producer_cfg)
@@ -124,9 +75,14 @@ impl MatchEngineService {
 
         let match_req_consumer = MatchConsumerBuilder::new()
             .with_consumer_cfg(req_consumer_cfg)
-            .with_sequencer_sender(&sequencer_sender)
+            .with_sequencer_sender(&req_send)
             .build()
             .expect("create consumer");
+
+        sequencer
+            .load_last_seq_id()
+            .await
+            .expect("load seq_id from disk");
 
         let handlers = vec![
             tokio::spawn(async move {
@@ -135,9 +91,9 @@ impl MatchEngineService {
             tokio::spawn(async move {
                 sequencer.run().await;
             }),
-            tokio::spawn(async move {
-                apply_thread.run().await;
-            }),
+            // tokio::spawn(async move {
+            //     apply_thread.run().await;
+            // }),
             tokio::spawn(async move {
                 match_result_producer.run().await;
             }),
@@ -146,7 +102,7 @@ impl MatchEngineService {
         // init Sequencer, ApplyThread, MatchResultProducer, ConsumerTask
         Ok((
             MatchEngineService {
-                submit_sender: sequencer_sender,
+                submit_sender: req_send,
             },
             handlers,
         ))
@@ -245,7 +201,7 @@ impl MatchReqConsumer {
 
         debug!(
             "Sending match request to sequencer, payload={}",
-            serde_json::to_string(&cmd_wrapper.inner).unwrap()
+            serde_json::to_string(cmd_wrapper.inner()).unwrap()
         );
 
         self.sequencer_sender
@@ -255,128 +211,134 @@ impl MatchReqConsumer {
     }
 }
 
-#[deprecated]
-struct ApplyThread {
-    orderbook: OrderBook,
-    submit_receiver: SequencerReceiver,
-    match_result_sender: MatchResultSender,
-}
+// struct OrderBookService {
+//     orderbook: OrderBook,
+//     submit_receiver: SequencerReceiver,
+//     match_result_sender: MatchResultSender,
+// }
 
-impl ApplyThread {
-    pub fn new(
-        orderbook: OrderBook,
-        submit_receiver: SequencerReceiver,
-        match_result_sender: MatchResultSender,
-    ) -> Self {
-        ApplyThread {
-            orderbook,
-            submit_receiver,
-            match_result_sender,
-        }
-    }
+// #[deprecated]
+// struct ApplyThread {
+//     orderbook: OrderBook,
+//     submit_receiver: SequencerReceiver,
+//     match_result_sender: MatchResultSender,
+// }
 
-    pub async fn run(mut self) {
-        info!("ApplyThread started");
-        loop {
-            let cmd_wrapper = self.submit_receiver.recv().await;
-            if cmd_wrapper.is_none() {
-                break;
-            }
-            let cmd_wrapper = cmd_wrapper.expect("recv cmd_wrapper");
-            self.orderbook.update_seq_id(cmd_wrapper.seq_id);
-            match cmd_wrapper.inner {
-                MatchCmd::MatchReq(req) => {
-                    self.handle_match_req(req).await;
-                }
-                MatchCmd::MatchAdminCmd(admin_cmd) => match admin_cmd.admin_action {
-                    x if x == oms::AdminAction::TakeSnapshot as i32 => {
-                        info!(
-                            "TakeSnapshot admin command received, current seq_id: {}",
-                            cmd_wrapper.seq_id
-                        );
+// impl ApplyThread {
+//     pub fn new(
+//         orderbook: OrderBook,
+//         submit_receiver: SequencerReceiver,
+//         match_result_sender: MatchResultSender,
+//     ) -> Self {
+//         ApplyThread {
+//             orderbook,
+//             submit_receiver,
+//             match_result_sender,
+//         }
+//     }
 
-                        match self.orderbook.take_snapshot() {
-                            Ok(snapshot) => {
-                                self.persist_snapshot_json(snapshot).await;
-                            }
-                            Err(e) => {
-                                error!("TakeSnapshot failed: {}", e);
-                            }
-                        }
-                    }
-                    _ => {}
-                },
-            }
-        }
-        info!("ApplyThread stopped");
-    }
+//     pub async fn run(mut self) {
+//         info!("ApplyThread started");
+//         loop {
+//             let cmd_wrapper = self.submit_receiver.recv().await;
+//             if cmd_wrapper.is_none() {
+//                 break;
+//             }
+//             let cmd_wrapper = cmd_wrapper.expect("recv cmd_wrapper");
+//             self.orderbook.update_seq_id(cmd_wrapper.seq_id);
+//             match cmd_wrapper.inner {
+//                 MatchCmd::MatchReq(req) => {
+//                     self.handle_match_req(req).await;
+//                 }
+//                 MatchCmd::MatchAdminCmd(admin_cmd) => match admin_cmd.admin_action {
+//                     x if x == oms::AdminAction::TakeSnapshot as i32 => {
+//                         info!(
+//                             "TakeSnapshot admin command received, current seq_id: {}",
+//                             cmd_wrapper.seq_id
+//                         );
 
-    #[instrument(level = "info", skip_all)]
-    pub async fn handle_match_req(&mut self, batch_match_req: oms::BatchMatchRequest) {
-        let mut match_result_buffer = Vec::with_capacity(batch_match_req.cmds.len());
-        for cmd in batch_match_req.cmds {
-            let trade_id = cmd.trade_id;
-            let prev_trade_id = cmd.prev_trade_id;
-            let action =
-                oms::BizAction::from_i32(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
-            let result = self.orderbook.process_trade_cmd(cmd);
-            match result {
-                Ok(r) => match r.action {
-                    oms::BizAction::FillOrder => {
-                        let fill_result = r.fill_result.as_ref().unwrap();
-                        let match_result =
-                            MatchResult::into_fill_result_pb(trade_id, prev_trade_id, fill_result);
-                        match_result_buffer.push(match_result);
-                    }
-                    oms::BizAction::CancelOrder => {
-                        match_result_buffer.push(MatchResult::into_cancel_result_pb(
-                            trade_id,
-                            prev_trade_id,
-                            r.cancel_result.as_ref().unwrap(),
-                        ));
-                    }
-                    _ => {}
-                },
-                Err(e) => match_result_buffer.push(MatchResult::into_err(
-                    trade_id,
-                    prev_trade_id,
-                    action,
-                    e.to_string(),
-                )),
-            }
-        }
-        // note: 基本上不可能; 即使发生可以通过重放恢复
-        if let Err(e) = self
-            .match_result_sender
-            .send(CmdWrapper::new(oms::BatchMatchResult {
-                trade_pair: batch_match_req.trade_pair.clone(),
-                results: match_result_buffer,
-            }))
-            .await
-        {
-            error!("send match result error: {}", e);
-        }
-    }
+//                         match self.orderbook.take_snapshot() {
+//                             Ok(snapshot) => {
+//                                 self.persist_snapshot_json(snapshot).await;
+//                             }
+//                             Err(e) => {
+//                                 error!("TakeSnapshot failed: {}", e);
+//                             }
+//                         }
+//                     }
+//                     _ => {}
+//                 },
+//             }
+//         }
+//         info!("ApplyThread stopped");
+//     }
 
-    async fn persist_snapshot_json(&self, snapshot: OrderBookSnapshot) {
-        let filename = format!(
-            "./snapshot/orderbook_snapshot_{}_{}_{}.json",
-            snapshot.trade_pair().pair(),
-            snapshot.id_manager().seq_id(),
-            chrono::Utc::now().timestamp_millis() as u64,
-        );
-        match serde_json::to_string_pretty(&snapshot) {
-            Err(e) => {
-                error!("serialize snapshot to json failed: {}", e);
-                return;
-            }
-            Ok(json) => {
-                tokio::fs::write(&filename, json).await.unwrap();
-                info!("persisted snapshot to file: {}", filename);
-            }
-        }
-    }
-}
+//     #[instrument(level = "info", skip_all)]
+//     pub async fn handle_match_req(&mut self, batch_match_req: oms::BatchMatchRequest) {
+//         let mut match_result_buffer = Vec::with_capacity(batch_match_req.cmds.len());
+//         for cmd in batch_match_req.cmds {
+//             let trade_id = cmd.trade_id;
+//             let prev_trade_id = cmd.prev_trade_id;
+//             let action =
+//                 oms::BizAction::from_i32(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
+//             let result = self.orderbook.process_trade_cmd(cmd);
+//             match result {
+//                 Ok(r) => match r.action {
+//                     oms::BizAction::FillOrder => {
+//                         let fill_result = r.fill_result.as_ref().unwrap();
+//                         let match_result =
+//                             MatchResult::into_fill_result_pb(trade_id, prev_trade_id, fill_result);
+//                         match_result_buffer.push(match_result);
+//                     }
+//                     oms::BizAction::CancelOrder => {
+//                         match_result_buffer.push(MatchResult::into_cancel_result_pb(
+//                             trade_id,
+//                             prev_trade_id,
+//                             r.cancel_result.as_ref().unwrap(),
+//                         ));
+//                     }
+//                     _ => {}
+//                 },
+//                 Err(e) => match_result_buffer.push(MatchResult::into_err(
+//                     trade_id,
+//                     prev_trade_id,
+//                     action,
+//                     e.to_string(),
+//                 )),
+//             }
+//         }
+//         // note: 基本上不可能; 即使发生可以通过重放恢复
+//         if let Err(e) = self
+//             .match_result_sender
+//             .send(CmdWrapper::new(oms::BatchMatchResult {
+//                 trade_pair: batch_match_req.trade_pair.clone(),
+//                 results: match_result_buffer,
+//             }))
+//             .await
+//         {
+//             error!("send match result error: {}", e);
+//         }
+//     }
+
+//     async fn persist_snapshot_json(&self, snapshot: OrderBookSnapshot) {
+//         let filename = format!(
+//             "./snapshot/orderbook_snapshot_{}_{}_{}.json",
+//             snapshot.trade_pair().pair(),
+//             snapshot.id_manager().seq_id(),
+//             chrono::Utc::now().timestamp_millis() as u64,
+//         );
+//         match serde_json::to_string_pretty(&snapshot) {
+//             Err(e) => {
+//                 error!("serialize snapshot to json failed: {}", e);
+//                 return;
+//             }
+//             Ok(json) => {
+//                 tokio::fs::write(&filename, json).await.unwrap();
+//                 info!("persisted snapshot to file: {}", filename);
+//             }
+//         }
+//     }
+// }
 
 struct MatchResultProducer {
     producer_cfg: ProducerConfig,

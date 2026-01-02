@@ -12,6 +12,7 @@ use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
 use tte_me::orderbook;
 use tte_me::service::MatchEngineService;
 use tte_oms::{oms::OMS, service::TradeSystem};
+use tte_sequencer::raft::RaftSequencerConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -213,6 +214,7 @@ async fn run_me(base: &str, quote: &str) -> Result<(), Box<dyn std::error::Error
                 auto_offset_reset: "earliest".to_string(), // auto
             },
         );
+    let raft_config = RaftSequencerConfig::from_env().expect("load raft config"); // todo: from AppConfig
 
     let _ = config.init_tracer().await?;
     config.print_args();
@@ -220,6 +222,7 @@ async fn run_me(base: &str, quote: &str) -> Result<(), Box<dyn std::error::Error
 
     let pair = TradePair::new(base, quote);
     let (me, _bg_tasks) = MatchEngineService::run_match_engine(
+        raft_config,
         pair.clone(),
         orderbook::OrderBook::new(pair),
         config.kafka_producers().clone(),

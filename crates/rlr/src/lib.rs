@@ -22,4 +22,5 @@ pub use crate::types::AppNodeId;
 
 pub use openraft::BasicNode;
 pub use openraft::Raft;
+pub use openraft::RaftTypeConfig;
 pub use openraft::storage::RaftStateMachine;

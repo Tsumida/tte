@@ -14,8 +14,6 @@ mod tests {
     use tempfile::TempDir;
     use tokio::io;
 
-    struct TestSuiteBuilder {}
-
     #[derive(Default)]
     struct HashMapInner {
         map: HashMap<String, String>,
@@ -35,9 +33,12 @@ mod tests {
     }
 
     impl AppStateMachine for HashMapInner {
+        type Input = crate::types::AppStateMachineInput;
+        type Output = crate::types::AppStateMachineOutput;
+
         fn apply(
             &mut self,
-            req: &crate::types::AppStateMachineInput,
+            req: Self::Input,
         ) -> anyhow::Result<crate::types::AppStateMachineOutput> {
             let key = serde_json::from_slice::<String>(&req.0)?;
             self.map.insert(key.clone(), key.clone());
@@ -48,9 +49,12 @@ mod tests {
             serde_json::to_vec(&self.map).unwrap()
         }
 
-        fn from_snapshot(data: Vec<u8>) -> Self {
+        fn from_snapshot(data: Vec<u8>) -> Result<Self, anyhow::Error>
+        where
+            Self: Sized,
+        {
             let map: HashMap<String, String> = serde_json::from_slice(&data).unwrap();
-            HashMapInner { map }
+            Ok(HashMapInner { map })
         }
     }
 
@@ -83,9 +87,12 @@ mod tests {
             tokio::fs::create_dir_all(&snapshot_dir).await?;
         }
 
-        let app_statemachine = AppStateMachineHandler::new(snapshot_dir.clone());
+        let app_statemachine =
+            AppStateMachineHandler::new(snapshot_dir.clone(), HashMapInner::default());
         Ok((rlr_storage, app_statemachine))
     }
+
+    struct TestSuiteBuilder {}
 
     impl
         StoreBuilder<
