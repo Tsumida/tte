@@ -16,56 +16,86 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tonic::transport::{Channel, Endpoint};
 
 #[derive(Debug, Clone)]
 pub struct RlrNetworkFactory {
-    clients: Arc<HashMap<AppNodeId, Channel>>,
+    clients: Arc<RwLock<HashMap<AppNodeId, Channel>>>,
 }
 
 impl RlrNetworkFactory {
-    pub async fn new(nodes: &HashMap<AppNodeId, BasicNode>) -> Result<Self, anyhow::Error> {
+    // connect_now: true时立即连接所有节点, false时在第一次RPC调用时连接
+    pub async fn new(
+        nodes: &HashMap<AppNodeId, BasicNode>,
+        connect_now: bool,
+    ) -> Result<Self, anyhow::Error> {
         let mut clients = HashMap::with_capacity(nodes.len());
 
         for (id, node) in nodes.iter() {
             let addr = normalize_http_addr(&node.addr);
             let endpoint = Endpoint::from_shared(addr).expect("invalid node address");
-            // todo: allow retry due to bootstrap delay
-
-            let mut channel = None;
-            {
-                for _ in 0..30 {
-                    match endpoint.connect().await {
-                        Ok(c) => {
-                            channel = Some(c);
-                            break;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "failed to connect to node {} at {}, retrying...: {}",
-                                id,
-                                node.addr,
-                                e
-                            );
-                            tokio::time::sleep(Duration::from_millis(2000)).await;
-                            continue;
-                        }
-                    }
-                }
-            }
-            if channel.is_none() {
-                return Err(anyhow::anyhow!(
-                    "failed to connect to node {} at {} after retries",
-                    id,
-                    node.addr
-                ));
-            }
+            let channel = if connect_now {
+                // 尝试ping最多30次，约耗时1分钟
+                Some(
+                    Self::build_channel_with_retry(
+                        *id,
+                        node,
+                        &endpoint,
+                        30,
+                        Duration::from_millis(2000),
+                    )
+                    .await?,
+                )
+            } else {
+                // connect_lazy
+                Some(endpoint.connect_lazy())
+            };
             clients.insert(*id, channel.unwrap());
         }
 
         Ok(Self {
-            clients: Arc::new(clients),
+            clients: Arc::new(RwLock::new(clients)),
         })
+    }
+
+    async fn build_channel_with_retry(
+        id: AppNodeId,
+        node: &BasicNode,
+        endpoint: &Endpoint,
+        retry: usize,
+        sleep_dur: Duration,
+    ) -> Result<Channel, anyhow::Error> {
+        let mut channel = None;
+        {
+            for _ in 0..retry {
+                match endpoint.connect().await {
+                    Ok(c) => {
+                        channel = Some(c);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to connect to node {} at {}, retrying...: {}",
+                            id,
+                            node.addr,
+                            e
+                        );
+                        tokio::time::sleep(sleep_dur).await;
+                        continue;
+                    }
+                }
+            }
+        }
+        if channel.is_some() {
+            Ok(channel.unwrap())
+        } else {
+            Err(anyhow::anyhow!(
+                "failed to connect to node {} at {} after retries",
+                id,
+                node.addr
+            ))
+        }
     }
 }
 
@@ -75,13 +105,22 @@ impl RaftNetworkFactory<AppTypeConfig> for RlrNetworkFactory {
     async fn new_client(
         &mut self,
         target: AppNodeId,
-        _: &openraft::impls::BasicNode,
+        node: &openraft::impls::BasicNode,
     ) -> Self::Network {
-        let channel = self
-            .clients
-            .get(&target)
-            .expect("client channel not found")
-            .clone();
+        if let Some(channel) = self.clients.read().await.get(&target) {
+            return RlrNetwork {
+                target,
+                channel: channel.clone(),
+            };
+        }
+
+        // create a channel
+        let addr = normalize_http_addr(&node.addr);
+        let endpoint = Endpoint::from_shared(addr).expect("invalid node address");
+        let mut clients = self.clients.write().await;
+        clients.insert(target, endpoint.connect_lazy());
+        let channel = clients.get(&target).unwrap().clone();
+        drop(clients);
 
         RlrNetwork { target, channel }
     }

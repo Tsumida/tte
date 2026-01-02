@@ -15,7 +15,7 @@ use tte_core::{
 use crate::{
     egress::AllowAllEgressController,
     orderbook::{OrderBook, OrderBookErr},
-    types::{CmdWrapper, MatchCmd, MatchResultReceiver, SequencerSender},
+    types::{CmdWrapper, MatchCmd, MatchCmdOutput, MatchResultReceiver, SequencerSender},
 };
 use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
 use tte_sequencer::raft::RaftSequencer;
@@ -31,13 +31,26 @@ unsafe impl Send for MatchEngineService {}
 unsafe impl Sync for MatchEngineService {}
 
 impl MatchEngineService {
-    pub async fn run_match_engine(
+    pub async fn build_component(
         raft_config: RaftSequencerConfig,
         trade_pair: TradePair,
         orderbook: OrderBook, // todo: 从DB加载快照
         producer_cfgs: HashMap<String, ProducerConfig>,
         consumer_cfgs: HashMap<String, ConsumerConfig>,
-    ) -> Result<(Self, Vec<JoinHandle<()>>), OrderBookErr> {
+    ) -> Result<
+        (
+            SequencerSender,
+            MatchReqConsumer,
+            RaftSequencer<
+                OrderBook,
+                CmdWrapper<MatchCmd>,
+                CmdWrapper<MatchCmdOutput>,
+                AllowAllEgressController,
+            >,
+            MatchResultProducer,
+        ),
+        OrderBookErr,
+    > {
         let batch_size = 32;
         let req_topic = format!("match_req_{}{}", trade_pair.base, trade_pair.quote);
         let result_topic = format!("match_result_{}{}", trade_pair.base, trade_pair.quote);
@@ -49,12 +62,13 @@ impl MatchEngineService {
             .expect("missing match-engine producer config");
 
         let (match_result_sender, match_result_receiver) =
-            mpsc::channel::<CmdWrapper<oms::BatchMatchResult>>(batch_size);
+            mpsc::channel::<oms::BatchMatchResult>(batch_size);
         let (req_send, req_recv) = tokio::sync::mpsc::channel::<CmdWrapper<MatchCmd>>(256);
 
-        let mut sequencer: RaftSequencer<
+        let sequencer: RaftSequencer<
             OrderBook,
             CmdWrapper<MatchCmd>,
+            CmdWrapper<MatchCmdOutput>,
             AllowAllEgressController,
         > = RaftSequencerBuilder::new()
             .with_node_id(*raft_config.node_id())
@@ -70,6 +84,7 @@ impl MatchEngineService {
         let match_result_producer = MatchResultProducerBuilder::new()
             .with_producer_cfg(result_producer_cfg)
             .with_match_result_receiver(match_result_receiver)
+            .with_node_id(raft_config.node_id().clone())
             .build()
             .expect("create producer");
 
@@ -79,6 +94,30 @@ impl MatchEngineService {
             .build()
             .expect("create consumer");
 
+        Ok((
+            req_send,
+            match_req_consumer,
+            sequencer,
+            match_result_producer,
+        ))
+    }
+
+    pub async fn run_match_engine(
+        raft_config: RaftSequencerConfig,
+        trade_pair: TradePair,
+        orderbook: OrderBook, // todo: 从DB加载快照
+        producer_cfgs: HashMap<String, ProducerConfig>,
+        consumer_cfgs: HashMap<String, ConsumerConfig>,
+    ) -> Result<(Self, Vec<JoinHandle<()>>), OrderBookErr> {
+        let (req_send, match_req_consumer, mut sequencer, match_result_producer) =
+            Self::build_component(
+                raft_config,
+                trade_pair,
+                orderbook,
+                producer_cfgs,
+                consumer_cfgs,
+            )
+            .await?;
         sequencer
             .load_last_seq_id()
             .await
@@ -166,7 +205,7 @@ impl<'a> MatchConsumerBuilder<'a> {
     }
 }
 
-struct MatchReqConsumer {
+pub struct MatchReqConsumer {
     trade_pair: TradePair,
     consumer: rdkafka::consumer::StreamConsumer,
     sequencer_sender: SequencerSender,
@@ -340,10 +379,11 @@ impl MatchReqConsumer {
 //     }
 // }
 
-struct MatchResultProducer {
+pub struct MatchResultProducer {
     producer_cfg: ProducerConfig,
     producer: rdkafka::producer::FutureProducer,
     match_result_receiver: MatchResultReceiver,
+    msg_headers: rdkafka::message::OwnedHeaders,
 }
 
 impl MatchResultProducer {
@@ -353,8 +393,7 @@ impl MatchResultProducer {
             self.producer_cfg.trade_pair.pair()
         );
         info!("{} started", &thread_name);
-        while let Some(cmd_wrapper) = self.match_result_receiver.recv().await {
-            let batch_match_result = cmd_wrapper.inner;
+        while let Some(batch_match_result) = self.match_result_receiver.recv().await {
             self.send(batch_match_result).await;
         }
         info!("{} stopped", &thread_name);
@@ -374,6 +413,7 @@ impl MatchResultProducer {
         self.producer
             .send(
                 rdkafka::producer::FutureRecord::to(self.producer_cfg.topic())
+                    .headers(self.msg_headers.clone())
                     .payload(buf)
                     .key(&key),
                 std::time::Duration::from_millis(500),
@@ -386,6 +426,7 @@ impl MatchResultProducer {
 struct MatchResultProducerBuilder<'a> {
     cfg: Option<&'a ProducerConfig>,
     match_result_receiver: Option<MatchResultReceiver>,
+    node_id: Option<u64>,
 }
 
 impl<'a> MatchResultProducerBuilder<'a> {
@@ -393,6 +434,7 @@ impl<'a> MatchResultProducerBuilder<'a> {
         MatchResultProducerBuilder {
             cfg: None,
             match_result_receiver: None,
+            node_id: None,
         }
     }
 
@@ -406,10 +448,27 @@ impl<'a> MatchResultProducerBuilder<'a> {
         self
     }
 
+    pub fn with_node_id(mut self, node_id: u64) -> Self {
+        self.node_id = Some(node_id);
+        self
+    }
+
     pub fn build(mut self) -> Result<MatchResultProducer, Box<dyn std::error::Error>> {
         let cfg = self.cfg.expect("producer config");
         let producer = cfg.create_producer()?;
+
+        let headers = rdkafka::message::OwnedHeaders::new()
+            .insert(rdkafka::message::Header {
+                key: "source",
+                value: Some("match_engine"),
+            })
+            .insert(rdkafka::message::Header {
+                key: "raft_node_id",
+                value: Some(&self.node_id.expect("node_id").to_string()),
+            });
+
         Ok(MatchResultProducer {
+            msg_headers: headers,
             producer_cfg: cfg.clone(),
             producer,
             match_result_receiver: self

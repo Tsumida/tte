@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::api::SequenceEntry;
@@ -11,7 +14,7 @@ use tokio::sync::oneshot;
 use tonic::async_trait;
 use tte_rlr::{
     AppNodeId, AppStateMachine, AppStateMachineHandler, AppStateMachineInput, AppTypeConfig,
-    BasicNode, RaftStateMachine, RaftTypeConfig, Rlr, new_rlr,
+    BasicNode, RaftStateMachine, RaftTypeConfig, Rlr, RlrBuilder, RlrLogStore, RlrNetworkFactory,
 };
 
 #[derive(Clone, Debug, Getters)]
@@ -53,13 +56,28 @@ impl RaftSequencerConfig {
             nodes,
         })
     }
+
+    pub fn test(db_path: &str) -> Self {
+        let node_id: AppNodeId = 1;
+
+        let mut nodes = HashMap::new();
+        nodes.insert(1, BasicNode::new("127.0.0.1:7001".to_string()));
+        nodes.insert(2, BasicNode::new("127.0.0.1:7002".to_string()));
+        nodes.insert(3, BasicNode::new("127.0.0.1:7003".to_string()));
+        Self {
+            db_path: db_path.to_string(),
+            node_id,
+            nodes,
+        }
+    }
 }
 
-pub struct RaftSequencerBuilder<S, D, E>
+pub struct RaftSequencerBuilder<S, D, R, E>
 where
     S: AppStateMachine,
-    D: Into<AppStateMachineInput> + SequenceEntry + Clone,
-    E: EgressController,
+    D: Into<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
+    R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync,
+    E: EgressController<R>,
 {
     node_id: Option<<AppTypeConfig as RaftTypeConfig>::NodeId>,
     db_path: Option<PathBuf>,
@@ -67,13 +85,15 @@ where
     req_recv: Option<tokio::sync::mpsc::Receiver<D>>,
     egress: Option<E>,
     state_machine: Option<S>,
+    _r: std::marker::PhantomData<R>,
 }
 
-impl<S, D, E> RaftSequencerBuilder<S, D, E>
+impl<S, D, R, E> RaftSequencerBuilder<S, D, R, E>
 where
     S: AppStateMachine,
-    D: Into<AppStateMachineInput> + SequenceEntry + Clone,
-    E: EgressController,
+    D: Into<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
+    R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync,
+    E: EgressController<R>,
 {
     pub fn new() -> Self {
         RaftSequencerBuilder {
@@ -83,6 +103,7 @@ where
             req_recv: None,
             egress: None,
             state_machine: None,
+            _r: std::marker::PhantomData,
         }
     }
 
@@ -119,13 +140,34 @@ where
         self
     }
 
-    pub async fn build(self) -> Result<RaftSequencer<S, D, E>, anyhow::Error> {
+    pub async fn build_components(
+        self,
+    ) -> Result<
+        (
+            Arc<tte_rlr::Config>,
+            RlrNetworkFactory,
+            RlrLogStore<AppTypeConfig>,
+            AppStateMachineHandler<S>,
+        ),
+        anyhow::Error,
+    > {
+        // let node_id = self.node_id.expect("node_id is required");
+        let db_path = self.db_path.expect("db_path is required");
+        let state_machine = self.state_machine.expect("state machine is required");
+        RlrBuilder::new()
+            .build_components_only::<S>(Path::new(&db_path), &self.nodes, state_machine)
+            .await
+    }
+
+    pub async fn build(self) -> Result<RaftSequencer<S, D, R, E>, anyhow::Error> {
         let node_id = self.node_id.expect("node_id is required");
         let db_path = self.db_path.expect("db_path is required");
         let req_recv = self.req_recv.expect("request receiver is required");
         let egress = self.egress.expect("egress controller is required");
         let state_machine = self.state_machine.expect("state machine is required");
-        let rlr = new_rlr::<S>(node_id, Path::new(&db_path), &self.nodes, state_machine).await?;
+        let rlr = RlrBuilder::new()
+            .build::<S>(node_id, Path::new(&db_path), &self.nodes, state_machine)
+            .await?;
 
         Ok(RaftSequencer {
             seq_id: AtomicU64::new(0), // 后续自己初始化
@@ -134,28 +176,34 @@ where
             egress,
             _s: std::marker::PhantomData,
             _d: std::marker::PhantomData,
+            _r: std::marker::PhantomData,
         })
     }
 }
 
+#[derive(Getters)]
 pub struct RaftSequencer<
     S: AppStateMachine,
-    D: Into<AppStateMachineInput> + SequenceEntry + Clone,
-    E: EgressController,
+    D: Into<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
+    R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync,
+    E: EgressController<R>,
 > {
     seq_id: AtomicU64, // 采用log_id作为seq_id
-    raft: Rlr,         // 可靠日志复制 + 自动更新业务状态机
+    #[getset(get = "pub")]
+    raft: Rlr, // 可靠日志复制 + 自动更新业务状态机
     req_recv: tokio::sync::mpsc::Receiver<D>,
     egress: E,
     _s: std::marker::PhantomData<S>,
     _d: std::marker::PhantomData<D>,
+    _r: std::marker::PhantomData<R>,
 }
 
-impl<S, D, E> RaftSequencer<S, D, E>
+impl<S, D, R, E> RaftSequencer<S, D, R, E>
 where
     S: AppStateMachine,
-    D: Into<AppStateMachineInput> + SequenceEntry + Clone,
-    E: EgressController,
+    D: Into<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
+    R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync,
+    E: EgressController<R>,
 {
     pub async fn load_last_seq_id(&mut self) -> Result<u64, anyhow::Error> {
         let (s, r) = oneshot::channel::<u64>();
@@ -254,7 +302,7 @@ where
 }
 
 #[async_trait]
-pub trait EgressController {
+pub trait EgressController<R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync> {
     async fn handle_response(
         &self,
         response: <AppTypeConfig as RaftTypeConfig>::R,

@@ -52,6 +52,10 @@ impl<S: AppStateMachine> AppStateMachineHandler<S> {
             snapshot_dir,
         }
     }
+
+    pub async fn export_snapshot(&self) -> Vec<u8> {
+        self.data.read().await.take_snapshot()
+    }
 }
 
 impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHandler<S> {
@@ -104,6 +108,7 @@ impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHand
             let rsp = match &entry.payload {
                 openraft::EntryPayload::Normal(input) => {
                     // perf: 去掉这一步的反序列化
+                    // todo: 假设反序列化失败
                     let converted_input = <S::Input>::try_from(input).map_err(|_| {
                         std::io::Error::new(
                             std::io::ErrorKind::InvalidData,

@@ -48,7 +48,7 @@ pub(crate) struct MatchState {
     filled_qty: Decimal, // taker已成交数量
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum KeyExt<T: PartialEq + Eq + PartialOrd + Ord> {
     Bid(T),
     Ask(T),
@@ -100,6 +100,7 @@ impl Ord for KeyExt<OrderBookKey> {
 
 // bid: (price desc, seq_id asc)
 // ask: (price asc , seq_id asc)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BTreeOrderQueue {
     direction: Direction,
     orders: BTreeMap<KeyExt<OrderBookKey>, MakerOrder>,
@@ -294,6 +295,7 @@ impl IDManager {
     }
 }
 
+#[derive(Debug, Clone, Getters, serde::Serialize, serde::Deserialize)]
 pub struct OrderBook {
     id_manager: IDManager,
     order_id_mapper: HashMap<OrderID, OrderBookKey>,

@@ -19,6 +19,7 @@ rust_decimal_macros.workspace = true
 lazy_static.workspace = true
 getset.workspace = true
 chrono.workspace = true
+tempfile.workspace = true
 
 tracing.workspace = true
 opentelemetry.workspace = true
@@ -34,10 +35,13 @@ rdkafka.workspace = true
 futures.workspace = true
 clap.workspace = true
 tonic-build.workspace = true
+openraft.workspace = true
+rocksdb.workspace = true
 
 tte-core = { path = "../core" }
 tte-infra = { path = "../infra" }
 tte-oms = { path = "../oms" }
 tte-ledger = { path = "../ledger" }
 tte-me = { path = "../match_engine" }
+tte-rlr = { path = "../rlr" }
 tte-sequencer = { path = "../sequencer" }

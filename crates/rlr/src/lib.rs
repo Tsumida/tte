@@ -17,10 +17,13 @@ pub use crate::types::AppStateMachineOutput;
 pub use crate::types::AppTypeConfig;
 
 pub use crate::rlr::Rlr;
-pub use crate::rlr::new_rlr;
+pub use crate::rlr::RlrBuilder;
+pub use crate::storage::RlrLogStore;
 pub use crate::types::AppNodeId;
 
+pub use crate::network::RlrNetworkFactory;
 pub use openraft::BasicNode;
+pub use openraft::Config;
 pub use openraft::Raft;
 pub use openraft::RaftTypeConfig;
 pub use openraft::storage::RaftStateMachine;

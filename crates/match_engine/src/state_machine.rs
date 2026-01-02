@@ -22,6 +22,15 @@ impl TryInto<tte_rlr::AppStateMachineOutput> for CmdWrapper<MatchCmdOutput> {
     }
 }
 
+impl TryFrom<tte_rlr::AppStateMachineOutput> for CmdWrapper<MatchCmdOutput> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: tte_rlr::AppStateMachineOutput) -> Result<Self, Self::Error> {
+        let cmd_wrapper: CmdWrapper<MatchCmdOutput> = serde_json::from_slice(&value.0)?;
+        Ok(cmd_wrapper)
+    }
+}
+
 impl AppStateMachine for OrderBook {
     type Input = CmdWrapper<MatchCmd>;
     type Output = CmdWrapper<MatchCmdOutput>;
@@ -68,10 +77,10 @@ impl AppStateMachine for OrderBook {
     }
 
     fn from_snapshot(data: Vec<u8>) -> Result<Self, anyhow::Error> {
-        todo!()
+        Ok(serde_json::from_slice(&data)?)
     }
 
     fn take_snapshot(&self) -> Vec<u8> {
-        todo!()
+        serde_json::to_vec(self).unwrap()
     }
 }

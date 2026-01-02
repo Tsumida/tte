@@ -43,6 +43,15 @@ where
             ts: 0,
         }
     }
+
+    pub fn with_meta<A: Send + Sync + 'static>(other: CmdWrapper<A>, inner: T) -> Self {
+        CmdWrapper {
+            inner,
+            seq_id: other.seq_id,
+            prev_seq_id: other.prev_seq_id,
+            ts: other.ts,
+        }
+    }
 }
 
 impl<T> SequenceEntry for CmdWrapper<T>
@@ -60,7 +69,6 @@ where
 }
 
 pub(crate) type SequencerSender = tokio::sync::mpsc::Sender<CmdWrapper<MatchCmd>>;
-pub(crate) type SequencerReceiver = tokio::sync::mpsc::Receiver<CmdWrapper<MatchCmd>>;
-pub(crate) type MatchResultSender = tokio::sync::mpsc::Sender<CmdWrapper<oms::BatchMatchResult>>;
-pub(crate) type MatchResultReceiver =
-    tokio::sync::mpsc::Receiver<CmdWrapper<oms::BatchMatchResult>>;
+// pub(crate) type SequencerReceiver = tokio::sync::mpsc::Receiver<CmdWrapper<MatchCmd>>;
+pub(crate) type MatchResultSender = tokio::sync::mpsc::Sender<oms::BatchMatchResult>;
+pub(crate) type MatchResultReceiver = tokio::sync::mpsc::Receiver<oms::BatchMatchResult>;

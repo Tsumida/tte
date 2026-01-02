@@ -269,14 +269,14 @@ where
 }
 
 // 管理本地磁盘的快照
-pub(crate) trait SnapshotManagerAPI {
+pub(crate) trait PersistSnapshotManager {
     async fn dump_snapshot(&mut self, snapshot: &Snapshot<AppTypeConfig>) -> Result<(), io::Error>;
 
-    async fn get_latest_snapshot_path(&self) -> anyhow::Result<Option<PathBuf>>;
+    // async fn get_latest_snapshot_path(&self) -> anyhow::Result<Option<PathBuf>>;
 
-    async fn locate_latest_snapshot_and_install(
-        &self,
-    ) -> anyhow::Result<Option<Snapshot<AppTypeConfig>>>;
+    // async fn locate_latest_snapshot_and_install(
+    //     &self,
+    // ) -> anyhow::Result<Option<Snapshot<AppTypeConfig>>>;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -332,7 +332,7 @@ impl DefaultSnapshotManager {
     }
 }
 
-impl SnapshotManagerAPI for DefaultSnapshotManager {
+impl PersistSnapshotManager for DefaultSnapshotManager {
     #[instrument(level = "info", skip_all)]
     // SnapshotBuilder.build_snapshot()调用
     async fn dump_snapshot(&mut self, snapshot: &Snapshot<AppTypeConfig>) -> Result<(), io::Error> {
@@ -364,43 +364,43 @@ impl SnapshotManagerAPI for DefaultSnapshotManager {
         Ok(())
     }
 
-    async fn get_latest_snapshot_path(&self) -> anyhow::Result<Option<PathBuf>> {
-        let mut dir = fs::read_dir(&self.snapshot_dir).await?;
-        let mut snapshots: Vec<PathBuf> = Vec::new();
-        let prefix = format!("snapshot_{}_", self.name);
+    // async fn get_latest_snapshot_path(&self) -> anyhow::Result<Option<PathBuf>> {
+    //     let mut dir = fs::read_dir(&self.snapshot_dir).await?;
+    //     let mut snapshots: Vec<PathBuf> = Vec::new();
+    //     let prefix = format!("snapshot_{}_", self.name);
 
-        while let Some(entry) = dir.next_entry().await? {
-            let path = entry.path();
+    //     while let Some(entry) = dir.next_entry().await? {
+    //         let path = entry.path();
 
-            let name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n,
-                None => continue,
-            };
+    //         let name = match path.file_name().and_then(|n| n.to_str()) {
+    //             Some(n) => n,
+    //             None => continue,
+    //         };
 
-            if name.starts_with(&prefix) {
-                snapshots.push(path);
-            }
-        }
+    //         if name.starts_with(&prefix) {
+    //             snapshots.push(path);
+    //         }
+    //     }
 
-        snapshots.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-        Ok(snapshots.pop())
-    }
+    //     snapshots.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    //     Ok(snapshots.pop())
+    // }
 
-    // install_snapshot()中使用，从本地加载最新的快照更新状态机
-    #[instrument(level = "info", skip_all)]
-    async fn locate_latest_snapshot_and_install(
-        &self,
-    ) -> anyhow::Result<Option<Snapshot<AppTypeConfig>>> {
-        if let Some(path) = self.get_latest_snapshot_path().await? {
-            tracing::debug!("load snapshot from: {}", path.display());
-            let data = tokio::fs::read(&path).await?;
-            let inner_snapshot: InnerSnapshot = serde_json::from_slice(&data)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            Ok(Some(inner_snapshot.into()))
-        } else {
-            Ok(None)
-        }
-    }
+    // // install_snapshot()中使用，从本地加载最新的快照更新状态机
+    // #[instrument(level = "info", skip_all)]
+    // async fn locate_latest_snapshot_and_install(
+    //     &self,
+    // ) -> anyhow::Result<Option<Snapshot<AppTypeConfig>>> {
+    //     if let Some(path) = self.get_latest_snapshot_path().await? {
+    //         tracing::debug!("load snapshot from: {}", path.display());
+    //         let data = tokio::fs::read(&path).await?;
+    //         let inner_snapshot: InnerSnapshot = serde_json::from_slice(&data)
+    //             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    //         Ok(Some(inner_snapshot.into()))
+    //     } else {
+    //         Ok(None)
+    //     }
+    // }
 }
 
 pub struct AppSnapshotBuilder<C: RaftTypeConfig> {
