@@ -22,6 +22,8 @@ pub struct RaftSequencerConfig {
     #[getset(get = "pub")]
     db_path: String,
     #[getset(get = "pub")]
+    snapshot_path: String,
+    #[getset(get = "pub")]
     node_id: AppNodeId,
     #[getset(get = "pub")]
     nodes: HashMap<AppNodeId, BasicNode>,
@@ -30,7 +32,7 @@ pub struct RaftSequencerConfig {
 impl RaftSequencerConfig {
     // 从环境变量加载配置
     //  RAFT_NODE_ID=1
-    //  RAFT_NODES="1=127.0.0.1:7001,2=127.0.0.1:7002,3=127.0.0.1:7003"
+    //  RAFT_NODES="1@127.0.0.1:7001,2@127.0.0.1:7002,3@127.0.0.1:7003"
     //  RAFT_DB_PATH="./data/raft_node_1"
     pub fn from_env() -> Result<Self, anyhow::Error> {
         let node_id: AppNodeId = std::env::var("RAFT_NODE_ID")?.parse()?;
@@ -38,7 +40,7 @@ impl RaftSequencerConfig {
         let nodes_str = std::env::var("RAFT_NODES")?;
         let mut nodes = HashMap::new();
         for node_pair in nodes_str.split(',') {
-            let mut parts = node_pair.splitn(2, '=');
+            let mut parts = node_pair.splitn(2, '@');
             let id: AppNodeId = parts
                 .next()
                 .expect("Invalid RAFT_NODES format")
@@ -49,15 +51,21 @@ impl RaftSequencerConfig {
         }
 
         let db_path = std::env::var("RAFT_DB_PATH")?;
+        let snapshot_path = std::env::var("RAFT_SNAPSHOT_PATH").unwrap_or_else(|_| {
+            let mut path = db_path.clone();
+            path.push_str("./snapshots"); // 一般在 bin/snapshots
+            path
+        });
 
         Ok(RaftSequencerConfig {
             db_path,
             node_id,
             nodes,
+            snapshot_path,
         })
     }
 
-    pub fn test(db_path: &str) -> Self {
+    pub fn test(db_path: &str, snapshot_path: &str) -> Self {
         let node_id: AppNodeId = 1;
 
         let mut nodes = HashMap::new();
@@ -68,6 +76,7 @@ impl RaftSequencerConfig {
             db_path: db_path.to_string(),
             node_id,
             nodes,
+            snapshot_path: snapshot_path.to_string(),
         }
     }
 }
@@ -81,6 +90,7 @@ where
 {
     node_id: Option<<AppTypeConfig as RaftTypeConfig>::NodeId>,
     db_path: Option<PathBuf>,
+    snapshot_path: Option<PathBuf>,
     nodes: HashMap<<AppTypeConfig as RaftTypeConfig>::NodeId, BasicNode>,
     req_recv: Option<tokio::sync::mpsc::Receiver<D>>,
     egress: Option<E>,
@@ -99,6 +109,7 @@ where
         RaftSequencerBuilder {
             node_id: None,
             db_path: None,
+            snapshot_path: None,
             nodes: HashMap::new(),
             req_recv: None,
             egress: None,
@@ -114,6 +125,11 @@ where
 
     pub fn with_db_path(mut self, db_path: PathBuf) -> Self {
         self.db_path = Some(db_path);
+        self
+    }
+
+    pub fn with_snapshot_path(mut self, snapshot_path: PathBuf) -> Self {
+        self.snapshot_path = Some(snapshot_path);
         self
     }
 
@@ -153,20 +169,33 @@ where
     > {
         // let node_id = self.node_id.expect("node_id is required");
         let db_path = self.db_path.expect("db_path is required");
+        let snapshot_dir = self.snapshot_path.expect("snapshot_path is required");
         let state_machine = self.state_machine.expect("state machine is required");
         RlrBuilder::new()
-            .build_components_only::<S>(Path::new(&db_path), &self.nodes, state_machine)
+            .build_components_only::<S>(
+                Path::new(&db_path),
+                Path::new(&snapshot_dir),
+                &self.nodes,
+                state_machine,
+            )
             .await
     }
 
     pub async fn build(self) -> Result<RaftSequencer<S, D, R, E>, anyhow::Error> {
         let node_id = self.node_id.expect("node_id is required");
         let db_path = self.db_path.expect("db_path is required");
+        let snapshot_dir = self.snapshot_path.expect("snapshot_path is required");
         let req_recv = self.req_recv.expect("request receiver is required");
         let egress = self.egress.expect("egress controller is required");
         let state_machine = self.state_machine.expect("state machine is required");
         let rlr = RlrBuilder::new()
-            .build::<S>(node_id, Path::new(&db_path), &self.nodes, state_machine)
+            .build::<S>(
+                node_id,
+                Path::new(&db_path),
+                Path::new(&snapshot_dir),
+                &self.nodes,
+                state_machine,
+            )
             .await?;
 
         Ok(RaftSequencer {
@@ -226,26 +255,29 @@ where
         self.seq_id.fetch_max(last_applied_log_id, Ordering::SeqCst)
     }
 
-    pub async fn run(mut self) {
-        let batch_size = 16;
-        let mut batch: Vec<D> = Vec::with_capacity(batch_size);
-
-        loop {
-            while batch.len() < batch_size {
-                if let Ok(entry) = self.req_recv.try_recv() {
+    async fn read_batch(&mut self, batch: &mut Vec<D>, batch_size: usize) {
+        while batch.len() < batch_size {
+            if let Ok(entry) = self.req_recv.try_recv() {
+                batch.push(entry);
+            } else if batch.is_empty() {
+                // If empty, do a blocking wait
+                if let Some(entry) = self.req_recv.recv().await {
                     batch.push(entry);
-                } else if batch.is_empty() {
-                    // If empty, do a blocking wait
-                    if let Some(entry) = self.req_recv.recv().await {
-                        batch.push(entry);
-                    } else {
-                        tracing::error!("RaftSequencer: request channel closed");
-                        return; // Channel closed
-                    }
                 } else {
-                    break;
+                    tracing::error!("RaftSequencer: request channel closed");
+                    return; // Channel closed
                 }
+            } else {
+                break;
             }
+        }
+    }
+
+    pub async fn run(mut self) {
+        let batch_size = 32;
+        let mut batch: Vec<D> = Vec::with_capacity(batch_size);
+        loop {
+            self.read_batch(&mut batch, batch_size).await;
             if batch.is_empty() {
                 continue;
             }

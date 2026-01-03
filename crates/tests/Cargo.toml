@@ -1,0 +1,47 @@
+[package]
+name = "tte-tests"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "mod.rs"
+
+[dependencies]
+tokio.workspace = true
+tonic.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+lazy_static.workspace = true
+getset.workspace = true
+chrono.workspace = true
+tempfile.workspace = true
+
+tracing.workspace = true
+opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-semantic-conventions.workspace = true
+tracing-appender.workspace = true
+opentelemetry-appender-tracing.workspace = true
+tonic-tracing-opentelemetry.workspace = true
+rdkafka.workspace = true
+futures.workspace = true
+clap.workspace = true
+tonic-build.workspace = true
+openraft.workspace = true
+rocksdb.workspace = true
+
+tte-core = { path = "../core" }
+tte-infra = { path = "../infra" }
+tte-rlr = { path = "../rlr" }
+tte-sequencer = { path = "../sequencer" }
+tte-ledger = { path = "../ledger" }
+tte-me = { path = "../match_engine" }
+tte-oms = { path = "../oms" }
+tte-server = { path = "../server" }
+tte-client = { path = "../client" }

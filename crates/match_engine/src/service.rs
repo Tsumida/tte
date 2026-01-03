@@ -13,7 +13,7 @@ use tte_core::{
 };
 
 use crate::{
-    egress::AllowAllEgressController,
+    egress::AllowAllEgress,
     orderbook::{OrderBook, OrderBookErr},
     types::{CmdWrapper, MatchCmd, MatchCmdOutput, MatchResultReceiver, SequencerSender},
 };
@@ -45,7 +45,7 @@ impl MatchEngineService {
                 OrderBook,
                 CmdWrapper<MatchCmd>,
                 CmdWrapper<MatchCmdOutput>,
-                AllowAllEgressController,
+                AllowAllEgress,
             >,
             MatchResultProducer,
         ),
@@ -63,20 +63,20 @@ impl MatchEngineService {
 
         let (match_result_sender, match_result_receiver) =
             mpsc::channel::<oms::BatchMatchResult>(batch_size);
-        let (req_send, req_recv) = tokio::sync::mpsc::channel::<CmdWrapper<MatchCmd>>(256);
+        let (req_send, req_recv) = tokio::sync::mpsc::channel::<CmdWrapper<MatchCmd>>(batch_size);
 
         let sequencer: RaftSequencer<
             OrderBook,
             CmdWrapper<MatchCmd>,
             CmdWrapper<MatchCmdOutput>,
-            AllowAllEgressController,
+            AllowAllEgress,
         > = RaftSequencerBuilder::new()
             .with_node_id(*raft_config.node_id())
             .with_db_path(PathBuf::from(raft_config.db_path()))
             .with_nodes(raft_config.nodes().clone())
             .with_request_receiver(req_recv)
             .with_state_machine(orderbook)
-            .with_egress(AllowAllEgressController::new(match_result_sender))
+            .with_egress(AllowAllEgress::new(match_result_sender))
             .build()
             .await
             .expect("build sequencer");
@@ -109,7 +109,7 @@ impl MatchEngineService {
         producer_cfgs: HashMap<String, ProducerConfig>,
         consumer_cfgs: HashMap<String, ConsumerConfig>,
     ) -> Result<(Self, Vec<JoinHandle<()>>), OrderBookErr> {
-        let (req_send, match_req_consumer, mut sequencer, match_result_producer) =
+        let (req_send, match_req_consumer, mut match_engine, match_result_producer) =
             Self::build_component(
                 raft_config,
                 trade_pair,
@@ -118,7 +118,7 @@ impl MatchEngineService {
                 consumer_cfgs,
             )
             .await?;
-        sequencer
+        match_engine
             .load_last_seq_id()
             .await
             .expect("load seq_id from disk");
@@ -128,11 +128,8 @@ impl MatchEngineService {
                 match_req_consumer.run().await;
             }),
             tokio::spawn(async move {
-                sequencer.run().await;
+                match_engine.run().await;
             }),
-            // tokio::spawn(async move {
-            //     apply_thread.run().await;
-            // }),
             tokio::spawn(async move {
                 match_result_producer.run().await;
             }),

@@ -3,18 +3,19 @@ use tonic::async_trait;
 use tte_rlr::{AppTypeConfig, RaftTypeConfig};
 use tte_sequencer::raft::EgressController;
 
-pub struct AllowAllEgressController {
+// 除了Learner之外
+pub struct AllowAllEgress {
     sender: MatchResultSender,
 }
 
-impl AllowAllEgressController {
+impl AllowAllEgress {
     pub fn new(sender: MatchResultSender) -> Self {
         Self { sender }
     }
 }
 
 #[async_trait]
-impl<R> EgressController<R> for AllowAllEgressController
+impl<R> EgressController<R> for AllowAllEgress
 where
     R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync,
 {

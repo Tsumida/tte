@@ -1,0 +1,10 @@
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/Tsumida/openraft.git?branch=main"]
+git = "https://github.com/Tsumida/openraft.git"
+branch = "main"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use rust_decimal_macros::dec;
 use tonic::transport::Server;
 use tracing::info;
@@ -12,6 +14,7 @@ use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
 use tte_me::orderbook;
 use tte_me::service::MatchEngineService;
 use tte_oms::{oms::OMS, service::TradeSystem};
+use tte_rlr::{RaftServiceClient, RaftServiceServer};
 use tte_sequencer::raft::RaftSequencerConfig;
 
 #[tokio::main]
@@ -24,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("me") => {
             let base = std::env::var("ME_BASE").unwrap();
             let quote = std::env::var("ME_QUOTE").unwrap();
-            run_me(&base, &quote).await?
+            run_me(&base, &quote, None).await?
         }
         _ => {
             panic!("unknown SERVER_MODE, please set SERVER_MODE to 'oms' or 'me'");
@@ -191,7 +194,11 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // 每一个交易对一个实例
-async fn run_me(base: &str, quote: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_me(
+    base: &str,
+    quote: &str,
+    exit_signal: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = AppConfig::dev();
     config
         .with_kafka_producer(
@@ -219,7 +226,12 @@ async fn run_me(base: &str, quote: &str) -> Result<(), Box<dyn std::error::Error
     let _ = config.init_tracer().await?;
     config.print_args();
     let addr = config.grpc_server_endpoint().parse()?;
-
+    let raft_addr: SocketAddr = raft_config
+        .nodes()
+        .get(&raft_config.node_id())
+        .unwrap()
+        .addr
+        .parse()?;
     let pair = TradePair::new(base, quote);
     let (me, _bg_tasks) = MatchEngineService::run_match_engine(
         raft_config,
@@ -231,15 +243,33 @@ async fn run_me(base: &str, quote: &str) -> Result<(), Box<dyn std::error::Error
     .await
     .expect("start match engine service");
 
-    info!("match-engine listen at {}", addr);
-    Server::builder()
-        .add_service(match_engine_service_server::MatchEngineServiceServer::new(
-            me,
-        ))
-        .serve(addr)
-        .await?;
+    let handles = vec![
+        tokio::spawn(async move {
+            info!("match-engine listen at {}", addr);
+            Server::builder()
+                .add_service(match_engine_service_server::MatchEngineServiceServer::new(
+                    me,
+                ))
+                .serve(addr)
+                .await
+                .unwrap();
+            info!("match-engine down");
+        }),
+        tokio::spawn(async move {
+            // info!("raft sequencer listen at {}", raft_addr);
+            // Server::builder()
+            //     .add_service(RaftServiceServer::new(todo!()))
+            //     .serve(raft_addr)
+            //     .await
+            //     .unwrap();
+            // info!("match-engine down");
+        }),
+    ];
 
-    info!("match-engine down");
-    config.shutdown().await?;
+    if let Some(exit_signal) = exit_signal {
+        exit_signal.await?;
+    } else {
+        futures::future::join_all(handles).await;
+    }
     Ok(())
 }

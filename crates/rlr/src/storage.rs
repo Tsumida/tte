@@ -28,7 +28,6 @@ use rocksdb::ColumnFamily;
 use rocksdb::DB;
 use rocksdb::Direction;
 use serde_json;
-use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
 use tracing::instrument;
@@ -410,7 +409,7 @@ pub struct AppSnapshotBuilder<C: RaftTypeConfig> {
     last_applied_log_id: Option<openraft::alias::LogIdOf<C>>,
     data: Vec<u8>,
     current_snapshot: Arc<RwLock<Option<Snapshot<C>>>>,
-    db_path: PathBuf,
+    snapshot_path: PathBuf,
 }
 
 impl AppSnapshotBuilder<AppTypeConfig> {
@@ -429,7 +428,7 @@ impl AppSnapshotBuilder<AppTypeConfig> {
             membership_log_id,
             last_applied_log_id,
             current_snapshot,
-            db_path: snapshot_dir,
+            snapshot_path: snapshot_dir,
         }
     }
 }
@@ -455,7 +454,7 @@ impl RaftSnapshotBuilder<AppTypeConfig> for AppSnapshotBuilder<AppTypeConfig> {
             *self.current_snapshot.write().await = Some(snapshot.clone());
         }
 
-        DefaultSnapshotManager::new("test", self.db_path.clone())
+        DefaultSnapshotManager::new("test", self.snapshot_path.clone())
             .dump_snapshot(&snapshot)
             .await?;
 

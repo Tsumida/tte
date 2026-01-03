@@ -1,12 +1,13 @@
 #[cfg(test)]
 mod me {
+    use tokio::time;
     use tracing::info;
 
     use tte_core::pbcode::oms::{self};
     use tte_core::types::TradePair;
     use tte_infra::config::AppConfig;
     use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
-    use tte_me::egress::AllowAllEgressController;
+    use tte_me::egress::AllowAllEgress;
     use tte_me::orderbook::{self, OrderBook};
     use tte_me::service::MatchEngineService;
     use tte_me::types::{CmdWrapper, MatchCmd, MatchCmdOutput};
@@ -29,24 +30,28 @@ mod me {
         let _ = config.init_tracer().await?;
         config.print_args();
 
-        let (_req_send, _match_req_consumer, _sequencer, _match_result_producer) =
-            MatchEngineService::build_component(
-                raft_config,
-                trade_pair.clone(),
-                orderbook::OrderBook::new(trade_pair.clone()),
-                config.kafka_producers().clone(),
-                config.kafka_consumers().clone(),
-            )
-            .await
-            .expect("start match engine service");
+        let (svc, handlers) = MatchEngineService::run_match_engine(
+            raft_config,
+            trade_pair.clone(),
+            orderbook::OrderBook::new(trade_pair.clone()),
+            config.kafka_producers().clone(),
+            config.kafka_consumers().clone(),
+        )
+        .await
+        .expect("start match engine service");
 
         // block until exit
         exit_signal.recv().await?;
+        drop(svc);
+        drop(handlers);
         info!("shutting down match engine for {}", node_id);
         Ok(())
     }
 
-    fn test_config(db_path: &str) -> (AppConfig, TradePair, RaftSequencerConfig) {
+    fn test_config(
+        db_path: &str,
+        snapshot_path: &str,
+    ) -> (AppConfig, TradePair, RaftSequencerConfig) {
         let base = "BTC";
         let quote = "USDT";
         let mut config = AppConfig::dev();
@@ -71,7 +76,7 @@ mod me {
                     auto_offset_reset: "earliest".to_string(), // auto
                 },
             );
-        let raft_config = RaftSequencerConfig::test(db_path); // todo: from AppConfig
+        let raft_config = RaftSequencerConfig::test(db_path, snapshot_path); // todo: from AppConfig
         (config, TradePair::new(base, quote), raft_config)
     }
 
@@ -97,11 +102,19 @@ mod me {
         > {
             // create a temp dir in WORKING_DIR/tmp
             let dir = Path::new("tmp");
-            if !dir.exists() {
+            let db_dir = dir.join("db");
+            let snapshot_dir = dir.join("snapshots");
+
+            if !db_dir.exists() {
                 tokio::fs::create_dir_all(dir).await.unwrap();
             }
+            if !snapshot_dir.exists() {
+                tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+            }
+
             let td = TempDir::new_in(dir).unwrap();
-            let (_, trade_pair, raft_config) = test_config(td.path().to_str().unwrap());
+            let (_, trade_pair, raft_config) =
+                test_config(td.path().to_str().unwrap(), snapshot_dir.to_str().unwrap());
             let batch_size = 32;
             let (match_result_sender, _) =
                 tokio::sync::mpsc::channel::<oms::BatchMatchResult>(batch_size);
@@ -110,14 +123,15 @@ mod me {
                 OrderBook,
                 CmdWrapper<MatchCmd>,
                 CmdWrapper<MatchCmdOutput>,
-                AllowAllEgressController,
+                AllowAllEgress,
             >::new()
             .with_node_id(*raft_config.node_id())
             .with_db_path(td.path().to_path_buf())
+            .with_snapshot_path(td.path().to_path_buf().join("snapshots")) // 测试场景放同一个目录
             .with_nodes(raft_config.nodes().clone())
             .with_request_receiver(req_recv)
             .with_state_machine(OrderBook::new(trade_pair.clone()))
-            .with_egress(AllowAllEgressController::new(match_result_sender))
+            .with_egress(AllowAllEgress::new(match_result_sender))
             .build_components()
             .await
             .expect("build sequencer");
@@ -142,7 +156,8 @@ mod me {
 
     #[tokio::test]
     #[ignore = "todo"]
-    pub async fn test_me_cluster() -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn test_me_network() -> Result<(), Box<dyn std::error::Error>> {
+        // todo:
         // Steps:
         // 1. Start 3 ME nodes forming a cluster using RaftSequencerBuilder::build()), blocking until peers all set up
         // 2. Wait for leader election
@@ -152,8 +167,34 @@ mod me {
         // 4. Record snapshot  and then shutdown all nodes.
         // 5. Restart all nodes from snapshot, verify state correctness.
 
-        // Requirements: using RaftSequencerBuilder::build() to start each ME node.
+        // Requirements:
+        // 1. using RaftSequencerBuilder::build() to start each ME node.
 
+        let mut exit_signals = vec![];
+        for node_id in 1..=3 {
+            let (sender, receiver) = tokio::sync::broadcast::channel::<()>(1);
+
+            let trade_pair = TradePair::new("BTC", "USDT");
+            let config = AppConfig::dev();
+            let raft_config = RaftSequencerConfig::test(
+                &format!("../../tmp/me_{}/rocksdb", node_id),
+                &format!("../../tmp/me_{}/snapshots", node_id),
+            );
+
+            tokio::spawn(async move {
+                let _ = run_me(node_id, trade_pair, config, raft_config, receiver)
+                    .await
+                    .expect("no error");
+            });
+            exit_signals.push(sender);
+        }
+
+        exit_signals.into_iter().for_each(|sig| {
+            let _ = sig.send(());
+        });
+
+        time::sleep(std::time::Duration::from_secs(5)).await;
+        tracing::info!("all nodes shut down");
         Ok(())
     }
 }

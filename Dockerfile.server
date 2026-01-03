@@ -1,53 +1,70 @@
-# --- 阶段 1: Builder (编译阶段) ---
-# 使用 clux/muslrust 镜像。
-FROM clux/muslrust:1.92.0-stable-2025-12-14 AS builder
-
-# 工作目录
-WORKDIR /home/rust/src
-
-# 1. 复制所有工作空间所需的文件
-# 复制顶层的 Cargo.toml 和 Cargo.lock
-COPY Cargo.toml Cargo.lock ./
-# 复制所有 crate 的 Cargo.toml，这是构建依赖所必需的
-COPY crates/*/Cargo.toml crates/
-
-# 2. **关键优化：依赖项缓存层**
-# 在工作空间中，我们使用 --workspace 来编译所有依赖
-RUN mkdir -p src/ && echo "fn main() {}" > src/main.rs && \
-    cargo build --release --workspace || true && \
-    rm -rf src/
-
-# 3. 复制所有应用程序源代码 (包括所有 crates 目录)
+# --- Stage 1: Planner (计算依赖食谱) ---
+FROM rust:1.92-slim-bookworm AS planner
+WORKDIR /app
 COPY . .
+RUN [ -f .cargo/config.toml ] && rm -rf .cargo || true
+RUN cargo install cargo-chef
+# 生成 recipe.json，它只包含依赖信息，不包含源码
+RUN cargo chef prepare --recipe-path recipe.json
 
-# 4. **最终编译** (只需编译本地代码)
-# 🎯 指定要编译的二进制 crate: 'server'
-RUN cargo build --release --package tte-server --bin mvp_server
-
-# --- 阶段 2: Final (最终镜像) ---
-# 保持不变，使用最小化的 Alpine
-FROM alpine:3.20.8
-
-# 最终镜像的工作目录
+# --- Stage 2: Builder (编译依赖和源码) ---
+FROM rust:1.92-slim-bookworm AS builder
 WORKDIR /app
 
-# 🎯 从 builder 阶段复制编译好的静态二进制文件
-# --bin server 编译出的可执行文件名默认为 crate 名称 'server'
-COPY --from=builder /home/rust/src/target/x86_64-unknown-linux-musl/release/mvp_server /app/mvp_server
+# 安装编译 RocksDB/Bindgen 所需的系统依赖
+# 将 update, install, cleanup 合并在一层以减小镜像体积
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libtool \
+    zlib1g-dev \
+    ca-certificates \
+    protobuf-compiler \
+    clang \
+    libclang-dev \
+    llvm-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-# 确保 Alpine 中包含运行 librdkafka 可能需要的 CA 证书
-RUN mkdir -p /app/snapshot && apk update && apk add --no-cache ca-certificates
+# 安装 cargo-chef
+RUN cargo install cargo-chef
+
+# 复制 Stage 1 生成的recipe.json
+COPY --from=planner /app/recipe.json recipe.json
+
+# 【核心步骤】编译依赖 (这一层会被缓存，直到你的 Cargo.toml 发生变化)
+# 如果 recipe.json 没变，Docker 会直接跳过这一步
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# 现在复制完整的源代码
+COPY . .
+RUN [ -f .cargo/config.toml ] && rm -rf .cargo || true
+# 编译业务代码 (因为依赖已经编译过了，这一步会非常快)
+RUN cargo build --release --package tte-server --bin mvp_server
+
+# --- Stage 3: Runtime (运行镜像) ---
+FROM debian:bookworm-slim
+WORKDIR /app
+
+# 安装运行时必要的库（如 SSL 证书）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 从 builder 复制编译好的二进制文件
+COPY --from=builder /app/target/release/mvp_server /app/mvp_server
 
 # 环境变量 (假设 server crate 对应你原来的 OMS 角色)
 ENV RUST_LOG=debug \
     ENV=dev \
     SERVER_MODE=oms \
     GRPC_SERVER_ENDPOINT=[::1]:8080 \
-    TRACE_ENDPOINT=http://localhost:4318
+    TRACE_ENDPOINT=http://localhost:4318 \
+    RAFT_NODE_ID=1 \
+    RAFT_NODES="" \
+    RAFT_DB_PATH="" \
+    RAFT_SNAPSHOT_PATH="" 
 
-# 暴露端口
 EXPOSE 8080
-
-# 启动命令
-# 🎯 运行新的二进制文件 'server'
 ENTRYPOINT ["/app/mvp_server"]

@@ -30,11 +30,12 @@ impl RlrBuilder {
         self,
         node_id: u64,
         db_path: &std::path::Path,
+        snapshot_dir: &std::path::Path,
         nodes: &HashMap<AppNodeId, BasicNode>,
         state_machine: S,
     ) -> Result<Rlr, anyhow::Error> {
         let (raft_config, network, rlr_storage, app_statemachine) = self
-            .build_components_only::<S>(db_path, nodes, state_machine)
+            .build_components_only::<S>(db_path, snapshot_dir, nodes, state_machine)
             .await?;
         let raft =
             openraft::Raft::new(node_id, raft_config, network, rlr_storage, app_statemachine)
@@ -45,7 +46,8 @@ impl RlrBuilder {
 
     pub async fn build_components_only<S: AppStateMachine>(
         &self,
-        db_path: &std::path::Path,
+        db_dir: &std::path::Path,
+        snapshot_dir: &std::path::Path,
         nodes: &HashMap<AppNodeId, BasicNode>,
         state_machine: S,
     ) -> Result<
@@ -57,7 +59,7 @@ impl RlrBuilder {
         ),
         anyhow::Error,
     > {
-        let snapshot_dir = db_path.to_path_buf().join("snapshots");
+        // let snapshot_dir = db_path.to_path_buf().join("snapshots");
         if !snapshot_dir.exists() {
             tokio::fs::create_dir_all(&snapshot_dir).await?;
         }
@@ -82,12 +84,12 @@ impl RlrBuilder {
             ColumnFamilyDescriptor::new(storage::CF_PURGE_ID, Options::default()),
             ColumnFamilyDescriptor::new(storage::CF_VOTE, Options::default()),
         ];
-        let db = DB::open_cf_descriptors(&db_opts, db_path, cfs).map_err(io::Error::other)?;
+        let db = DB::open_cf_descriptors(&db_opts, db_dir, cfs).map_err(io::Error::other)?;
         let db = Arc::new(db);
         let rlr_storage = RlrLogStore::new(db.clone());
 
         let app_statemachine: AppStateMachineHandler<S> =
-            AppStateMachineHandler::new(snapshot_dir.clone(), state_machine);
+            AppStateMachineHandler::new(snapshot_dir.to_path_buf(), state_machine);
         let network = network::RlrNetworkFactory::new(nodes, false).await?;
 
         Ok((raft_config, network, rlr_storage, app_statemachine))

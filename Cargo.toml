@@ -15,6 +15,7 @@ members = [
     "crates/server",
     "crates/client",
     "crates/testkit",
+    "crates/tests",
 ]
 
 [workspace.dependencies]
@@ -58,5 +59,3 @@ tempfile = { version = "3.4.0" }
 [build-dependencies]
 prost-build = "0.12"
 tonic-build = "0.9"
-
-
