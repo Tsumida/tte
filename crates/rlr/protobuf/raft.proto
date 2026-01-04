@@ -2,15 +2,15 @@ syntax = "proto3";
 
 package raft;
 
-// 
-service RaftService {
-  // 
+// 参考: https://github.com/databendlabs/openraft/blob/main/examples/raft-kv-memstore-grpc/proto/raft.proto
+service Raft {
+  // 处理AppendEntries请求
   rpc AppendEntries (AppendEntriesReq) returns (AppendEntriesRsp) {}
 
-  // 
+  // 接受请求，发送完整快照
   rpc SendFullSnapshot (SendFullSnapshotReq) returns (SendFullSnapshotRsp) {}
 
-  // 
+  // 投票消息
   rpc Vote (VoteReq) returns (VoteRsp) {}
 }
 

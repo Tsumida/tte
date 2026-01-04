@@ -28,5 +28,5 @@ pub use openraft::Raft;
 pub use openraft::RaftTypeConfig;
 pub use openraft::storage::RaftStateMachine;
 
-pub use crate::pbcode::raft::raft_service_client::RaftServiceClient;
-pub use crate::pbcode::raft::raft_service_server::RaftServiceServer;
+pub use crate::pbcode::raft::raft_client::RaftClient;
+pub use crate::pbcode::raft::raft_server::RaftServer;

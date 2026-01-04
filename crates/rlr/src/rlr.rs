@@ -3,12 +3,16 @@ use std::{collections::HashMap, sync::Arc};
 use openraft::{BasicNode, Raft};
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
 use tokio::io;
+use tonic::async_trait;
+use tracing::debug;
 
 use crate::{
     AppStateMachine, AppStateMachineHandler, network,
     storage::{self, RlrLogStore},
     types::{AppNodeId, AppTypeConfig},
 };
+
+use crate::pbcode::raft as pb;
 
 pub type Rlr = Raft<AppTypeConfig>;
 
@@ -93,5 +97,42 @@ impl RlrBuilder {
         let network = network::RlrNetworkFactory::new(nodes, false).await?;
 
         Ok((raft_config, network, rlr_storage, app_statemachine))
+    }
+}
+
+// 参考: https://github.com/databendlabs/openraft/blob/main/examples/raft-kv-memstore-grpc/src/grpc/raft_service.rs
+// RPC被调端逻辑. 实现pbcode.raft. 因为被调需要用到Rlr.raft, 所以在Rlr实现
+#[async_trait]
+impl pb::raft_server::Raft for Rlr {
+    // todo: Impl Into<xx>  under src/pbcode/ext.rs
+    async fn append_entries(
+        &self,
+        request: tonic::Request<pb::AppendEntriesReq>,
+    ) -> Result<tonic::Response<pb::AppendEntriesRsp>, tonic::Status> {
+        unimplemented!()
+    }
+
+    async fn vote(
+        &self,
+        request: tonic::Request<pb::VoteReq>,
+    ) -> Result<tonic::Response<pb::VoteRsp>, tonic::Status> {
+        debug!("Processing vote request");
+
+        // todo: Impl Into<xx> for pb::VoteReq under src/pbcode/ext.rs
+        let vote_resp = self
+            .vote(request.into_inner().into())
+            .await
+            .map_err(|e| tonic::Status::internal(format!("Vote operation failed: {}", e)))?;
+
+        debug!("Vote request processed successfully");
+        Ok(tonic::Response::new(vote_resp.into()))
+    }
+
+    // todo: Impl Into<xx>  under src/pbcode/ext.rs
+    async fn send_full_snapshot(
+        &self,
+        request: tonic::Request<pb::SendFullSnapshotReq>,
+    ) -> Result<tonic::Response<pb::SendFullSnapshotRsp>, tonic::Status> {
+        unimplemented!()
     }
 }

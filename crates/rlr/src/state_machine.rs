@@ -12,6 +12,7 @@ use crate::{
     types::{AppStateMachineOutput, AppTypeConfig},
 };
 
+// 业务状态机抽象
 pub trait AppStateMachine: Send + Sync + 'static {
     type Input: for<'a> TryFrom<&'a <AppTypeConfig as RaftTypeConfig>::D> + Send + 'static;
     type Output: TryInto<<AppTypeConfig as RaftTypeConfig>::R> + Send + 'static;

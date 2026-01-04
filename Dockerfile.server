@@ -1,18 +1,19 @@
-# --- Stage 1: Planner (计算依赖食谱) ---
-FROM rust:1.92-slim-bookworm AS planner
+# 使用官方预装了 cargo-chef 的镜像，省去 20s 的安装时间
+FROM lukemathwalker/cargo-chef:0.1.73-rust-1.92-slim-bookworm AS chef
 WORKDIR /app
+
+# --- Stage 1: Planner ---
+FROM chef AS planner
 COPY . .
+# 移除本地干扰配置
 RUN [ -f .cargo/config.toml ] && rm -rf .cargo || true
-RUN cargo install cargo-chef
-# 生成 recipe.json，它只包含依赖信息，不包含源码
 RUN cargo chef prepare --recipe-path recipe.json
 
-# --- Stage 2: Builder (编译依赖和源码) ---
-FROM rust:1.92-slim-bookworm AS builder
+# --- Stage 2: Builder ---
+FROM chef AS builder
 WORKDIR /app
 
-# 安装编译 RocksDB/Bindgen 所需的系统依赖
-# 将 update, install, cleanup 合并在一层以减小镜像体积
+# 1. 安装系统依赖 (利用 Docker 缓存)
 RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -27,33 +28,31 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
     llvm-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# 安装 cargo-chef
-RUN cargo install cargo-chef
-
-# 复制 Stage 1 生成的recipe.json
+# 2. 编译依赖阶段
 COPY --from=planner /app/recipe.json recipe.json
+# 使用缓存挂载加速依赖下载和编译
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo chef cook --release --recipe-path recipe.json
 
-# 【核心步骤】编译依赖 (这一层会被缓存，直到你的 Cargo.toml 发生变化)
-# 如果 recipe.json 没变，Docker 会直接跳过这一步
-RUN cargo chef cook --release --recipe-path recipe.json
-
-# 现在复制完整的源代码
+# 3. 编译源码阶段
 COPY . .
 RUN [ -f .cargo/config.toml ] && rm -rf .cargo || true
-# 编译业务代码 (因为依赖已经编译过了，这一步会非常快)
-RUN cargo build --release --package tte-server --bin mvp_server
 
-# --- Stage 3: Runtime (运行镜像) ---
+# 【关键优化】：使用缓存挂载进行增量构建
+# 即使代码变了，这里也会利用之前构建生成的 target 目录，极大缩短链接和编译本地 crate 的时间
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --package tte-server --bin mvp_server && \
+    cp target/release/mvp_server /app/mvp_server
+
+# --- Stage 3: Runtime ---
 FROM debian:bookworm-slim
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# 安装运行时必要的库（如 SSL 证书）
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# 从 builder 复制编译好的二进制文件
-COPY --from=builder /app/target/release/mvp_server /app/mvp_server
+# 直接从 builder 根目录拿 cp 出来的二进制文件，避免去复杂的 target 目录下找
+COPY --from=builder /app/mvp_server /app/mvp_server
 
 # 环境变量 (假设 server crate 对应你原来的 OMS 角色)
 ENV RUST_LOG=debug \

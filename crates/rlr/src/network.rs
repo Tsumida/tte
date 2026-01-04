@@ -100,7 +100,7 @@ impl RlrNetworkFactory {
 }
 
 impl RaftNetworkFactory<AppTypeConfig> for RlrNetworkFactory {
-    type Network = RlrNetwork;
+    type Network = RaftRpcCaller;
 
     async fn new_client(
         &mut self,
@@ -108,7 +108,7 @@ impl RaftNetworkFactory<AppTypeConfig> for RlrNetworkFactory {
         node: &openraft::impls::BasicNode,
     ) -> Self::Network {
         if let Some(channel) = self.clients.read().await.get(&target) {
-            return RlrNetwork {
+            return RaftRpcCaller {
                 target,
                 channel: channel.clone(),
             };
@@ -122,24 +122,25 @@ impl RaftNetworkFactory<AppTypeConfig> for RlrNetworkFactory {
         let channel = clients.get(&target).unwrap().clone();
         drop(clients);
 
-        RlrNetwork { target, channel }
+        RaftRpcCaller { target, channel }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct RlrNetwork {
+pub struct RaftRpcCaller {
     target: AppNodeId,
     channel: Channel,
 }
 
-impl RlrNetwork {
+impl RaftRpcCaller {
     #[inline]
-    fn client(&self) -> pb::raft_service_client::RaftServiceClient<Channel> {
-        pb::raft_service_client::RaftServiceClient::new(self.channel.clone())
+    fn client(&self) -> pb::raft_client::RaftClient<Channel> {
+        pb::raft_client::RaftClient::new(self.channel.clone())
     }
 }
 
-impl openraft::network::v2::RaftNetworkV2<AppTypeConfig> for RlrNetwork {
+// 实现Caller端逻辑. 在openraft内部调用
+impl openraft::network::v2::RaftNetworkV2<AppTypeConfig> for RaftRpcCaller {
     async fn append_entries(
         &mut self,
         rpc: AppendEntriesRequest<AppTypeConfig>,
@@ -319,6 +320,7 @@ impl openraft::network::v2::RaftNetworkV2<AppTypeConfig> for RlrNetwork {
     }
 }
 
+// 工具类函数
 #[inline]
 fn normalize_http_addr(addr: &str) -> String {
     if addr.starts_with("http://") || addr.starts_with("https://") {

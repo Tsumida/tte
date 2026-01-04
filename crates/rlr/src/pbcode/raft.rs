@@ -102,16 +102,16 @@ pub struct SendFullSnapshotRsp {
     pub term: u64,
 }
 /// Generated client implementations.
-pub mod raft_service_client {
+pub mod raft_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    ///
+    /// 参考: https://github.com/databendlabs/openraft/blob/main/examples/raft-kv-memstore-grpc/proto/raft.proto
     #[derive(Debug, Clone)]
-    pub struct RaftServiceClient<T> {
+    pub struct RaftClient<T> {
         inner: tonic::client::Grpc<T>,
     }
-    impl RaftServiceClient<tonic::transport::Channel> {
+    impl RaftClient<tonic::transport::Channel> {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
@@ -122,7 +122,7 @@ pub mod raft_service_client {
             Ok(Self::new(conn))
         }
     }
-    impl<T> RaftServiceClient<T>
+    impl<T> RaftClient<T>
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
@@ -140,7 +140,7 @@ pub mod raft_service_client {
         pub fn with_interceptor<F>(
             inner: T,
             interceptor: F,
-        ) -> RaftServiceClient<InterceptedService<T, F>>
+        ) -> RaftClient<InterceptedService<T, F>>
         where
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
@@ -154,7 +154,7 @@ pub mod raft_service_client {
                 http::Request<tonic::body::BoxBody>,
             >>::Error: Into<StdError> + Send + Sync,
         {
-            RaftServiceClient::new(InterceptedService::new(inner, interceptor))
+            RaftClient::new(InterceptedService::new(inner, interceptor))
         }
         /// Compress requests with the given encoding.
         ///
@@ -187,7 +187,7 @@ pub mod raft_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        ///
+        /// 处理AppendEntries请求
         pub async fn append_entries(
             &mut self,
             request: impl tonic::IntoRequest<super::AppendEntriesReq>,
@@ -205,15 +205,12 @@ pub mod raft_service_client {
                     )
                 })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/raft.RaftService/AppendEntries",
-            );
+            let path = http::uri::PathAndQuery::from_static("/raft.Raft/AppendEntries");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("raft.RaftService", "AppendEntries"));
+            req.extensions_mut().insert(GrpcMethod::new("raft.Raft", "AppendEntries"));
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// 接受请求，发送完整快照
         pub async fn send_full_snapshot(
             &mut self,
             request: impl tonic::IntoRequest<super::SendFullSnapshotReq>,
@@ -232,14 +229,14 @@ pub mod raft_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/raft.RaftService/SendFullSnapshot",
+                "/raft.Raft/SendFullSnapshot",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("raft.RaftService", "SendFullSnapshot"));
+                .insert(GrpcMethod::new("raft.Raft", "SendFullSnapshot"));
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// 投票消息
         pub async fn vote(
             &mut self,
             request: impl tonic::IntoRequest<super::VoteReq>,
@@ -254,21 +251,21 @@ pub mod raft_service_client {
                     )
                 })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/raft.RaftService/Vote");
+            let path = http::uri::PathAndQuery::from_static("/raft.Raft/Vote");
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new("raft.RaftService", "Vote"));
+            req.extensions_mut().insert(GrpcMethod::new("raft.Raft", "Vote"));
             self.inner.unary(req, path, codec).await
         }
     }
 }
 /// Generated server implementations.
-pub mod raft_service_server {
+pub mod raft_server {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with RaftServiceServer.
+    /// Generated trait containing gRPC methods that should be implemented for use with RaftServer.
     #[async_trait]
-    pub trait RaftService: Send + Sync + 'static {
-        ///
+    pub trait Raft: Send + Sync + 'static {
+        /// 处理AppendEntries请求
         async fn append_entries(
             &self,
             request: tonic::Request<super::AppendEntriesReq>,
@@ -276,7 +273,7 @@ pub mod raft_service_server {
             tonic::Response<super::AppendEntriesRsp>,
             tonic::Status,
         >;
-        ///
+        /// 接受请求，发送完整快照
         async fn send_full_snapshot(
             &self,
             request: tonic::Request<super::SendFullSnapshotReq>,
@@ -284,15 +281,15 @@ pub mod raft_service_server {
             tonic::Response<super::SendFullSnapshotRsp>,
             tonic::Status,
         >;
-        ///
+        /// 投票消息
         async fn vote(
             &self,
             request: tonic::Request<super::VoteReq>,
         ) -> std::result::Result<tonic::Response<super::VoteRsp>, tonic::Status>;
     }
-    ///
+    /// 参考: https://github.com/databendlabs/openraft/blob/main/examples/raft-kv-memstore-grpc/proto/raft.proto
     #[derive(Debug)]
-    pub struct RaftServiceServer<T: RaftService> {
+    pub struct RaftServer<T: Raft> {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
@@ -300,7 +297,7 @@ pub mod raft_service_server {
         max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
-    impl<T: RaftService> RaftServiceServer<T> {
+    impl<T: Raft> RaftServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
@@ -352,9 +349,9 @@ pub mod raft_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for RaftServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for RaftServer<T>
     where
-        T: RaftService,
+        T: Raft,
         B: Body + Send + 'static,
         B::Error: Into<StdError> + Send + 'static,
     {
@@ -370,12 +367,10 @@ pub mod raft_service_server {
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             let inner = self.inner.clone();
             match req.uri().path() {
-                "/raft.RaftService/AppendEntries" => {
+                "/raft.Raft/AppendEntries" => {
                     #[allow(non_camel_case_types)]
-                    struct AppendEntriesSvc<T: RaftService>(pub Arc<T>);
-                    impl<
-                        T: RaftService,
-                    > tonic::server::UnaryService<super::AppendEntriesReq>
+                    struct AppendEntriesSvc<T: Raft>(pub Arc<T>);
+                    impl<T: Raft> tonic::server::UnaryService<super::AppendEntriesReq>
                     for AppendEntriesSvc<T> {
                         type Response = super::AppendEntriesRsp;
                         type Future = BoxFuture<
@@ -416,12 +411,10 @@ pub mod raft_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/raft.RaftService/SendFullSnapshot" => {
+                "/raft.Raft/SendFullSnapshot" => {
                     #[allow(non_camel_case_types)]
-                    struct SendFullSnapshotSvc<T: RaftService>(pub Arc<T>);
-                    impl<
-                        T: RaftService,
-                    > tonic::server::UnaryService<super::SendFullSnapshotReq>
+                    struct SendFullSnapshotSvc<T: Raft>(pub Arc<T>);
+                    impl<T: Raft> tonic::server::UnaryService<super::SendFullSnapshotReq>
                     for SendFullSnapshotSvc<T> {
                         type Response = super::SendFullSnapshotRsp;
                         type Future = BoxFuture<
@@ -462,10 +455,10 @@ pub mod raft_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/raft.RaftService/Vote" => {
+                "/raft.Raft/Vote" => {
                     #[allow(non_camel_case_types)]
-                    struct VoteSvc<T: RaftService>(pub Arc<T>);
-                    impl<T: RaftService> tonic::server::UnaryService<super::VoteReq>
+                    struct VoteSvc<T: Raft>(pub Arc<T>);
+                    impl<T: Raft> tonic::server::UnaryService<super::VoteReq>
                     for VoteSvc<T> {
                         type Response = super::VoteRsp;
                         type Future = BoxFuture<
@@ -519,7 +512,7 @@ pub mod raft_service_server {
             }
         }
     }
-    impl<T: RaftService> Clone for RaftServiceServer<T> {
+    impl<T: Raft> Clone for RaftServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -531,7 +524,7 @@ pub mod raft_service_server {
             }
         }
     }
-    impl<T: RaftService> Clone for _Inner<T> {
+    impl<T: Raft> Clone for _Inner<T> {
         fn clone(&self) -> Self {
             Self(Arc::clone(&self.0))
         }
@@ -541,7 +534,7 @@ pub mod raft_service_server {
             write!(f, "{:?}", self.0)
         }
     }
-    impl<T: RaftService> tonic::server::NamedService for RaftServiceServer<T> {
-        const NAME: &'static str = "raft.RaftService";
+    impl<T: Raft> tonic::server::NamedService for RaftServer<T> {
+        const NAME: &'static str = "raft.Raft";
     }
 }
