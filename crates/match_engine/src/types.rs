@@ -1,6 +1,5 @@
 use getset::Getters;
 use tte_core::pbcode::oms;
-use tte_rlr::AppStateMachineInput;
 use tte_sequencer::api::SequenceEntry;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -24,13 +23,6 @@ pub struct CmdWrapper<T: Send + Sync + 'static> {
     pub(crate) prev_seq_id: u64,
     pub(crate) ts: u64,
 }
-
-impl Into<AppStateMachineInput> for CmdWrapper<MatchCmd> {
-    fn into(self) -> AppStateMachineInput {
-        AppStateMachineInput(serde_json::to_vec(&self).expect("serialize MatchCmd"))
-    }
-}
-
 impl<T> CmdWrapper<T>
 where
     T: Send + Sync + 'static,

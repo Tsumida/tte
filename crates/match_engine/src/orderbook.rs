@@ -329,8 +329,10 @@ impl OrderBook {
     ) -> Result<MatchResult, OrderBookErr> {
         if let Some(cmd) = trade_cmd.rpc_cmd {
             self.id_manager.update_trade_id(trade_cmd.trade_id);
-            match BizAction::from_i32(cmd.biz_action) {
-                Some(BizAction::PlaceOrder) => {
+            match BizAction::try_from(cmd.biz_action)
+                .map_err(|_| OrderBookErr::new(err_code::ERR_INVALID_REQUEST))?
+            {
+                BizAction::PlaceOrder => {
                     if let Some(oms::PlaceOrderReq {
                         order: Some(place_order),
                     }) = cmd.place_order_req
@@ -342,11 +344,11 @@ impl OrderBook {
                         return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
                     }
                 }
-                Some(BizAction::CancelOrder) => {
+                BizAction::CancelOrder => {
                     if let Some(req) = cmd.cancel_order_req {
                         let order_id = req.order_id;
-                        let direction = Direction::from_i32(req.direction)
-                            .ok_or(OrderBookErr::new(err_code::ERR_INVALID_REQUEST))?;
+                        let direction = Direction::try_from(req.direction)
+                            .map_err(|_| OrderBookErr::new(err_code::ERR_INVALID_REQUEST))?;
                         return self.cancel_order(order_id, direction);
                     } else {
                         return Err(OrderBookErr::new(err_code::ERR_INVALID_REQUEST));
@@ -612,7 +614,7 @@ impl OrderBook {
             let trade_id = cmd.trade_id;
             let prev_trade_id = cmd.prev_trade_id;
             let action =
-                oms::BizAction::from_i32(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
+                oms::BizAction::try_from(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
             let result = self.process_trade_cmd(cmd);
             match result {
                 Ok(r) => match r.action {

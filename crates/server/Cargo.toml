@@ -34,7 +34,7 @@ tonic-tracing-opentelemetry.workspace = true
 rdkafka.workspace = true
 futures.workspace = true
 clap.workspace = true
-tonic-build.workspace = true
+tonic-prost-build.workspace = true
 openraft.workspace = true
 rocksdb.workspace = true
 

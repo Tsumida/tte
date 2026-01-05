@@ -131,16 +131,18 @@ impl Order {
             client_order_id: om_order.client_order_id,
             trade_id: om_order.trade_id,
             prev_trade_id: om_order.prev_trade_id,
-            time_in_force: pb::TimeInForce::from_i32(om_order.time_in_force)
-                .ok_or("invalid time_in_force")?,
-            order_type: pb::OrderType::from_i32(om_order.order_type).ok_or("invalid order_type")?,
-            direction: pb::Direction::from_i32(om_order.direction).ok_or("invalid direction")?,
+            time_in_force: pb::TimeInForce::try_from(om_order.time_in_force)
+                .map_err(|_| "invalid time_in_force")?,
+            order_type: pb::OrderType::try_from(om_order.order_type)
+                .map_err(|_| "invalid order_type")?,
+            direction: pb::Direction::try_from(om_order.direction)
+                .map_err(|_| "invalid direction")?,
             price,
             target_qty: quantity,
             post_only: om_order.post_only,
             trade_pair: om_order.trade_pair.ok_or("missing trade pair")?.into(),
-            stp_strategy: pb::StpStrategy::from_i32(om_order.stp_strategy)
-                .ok_or("invalid stp_strategy")?,
+            stp_strategy: pb::StpStrategy::try_from(om_order.stp_strategy)
+                .map_err(|_| "invalid stp_strategy")?,
             create_time: om_order.create_time,
             version: om_order.version,
         })
@@ -217,13 +219,15 @@ impl FillRecord {
             prev_match_id: mr.prev_match_id,
             price: Decimal::from_str_exact(&mr.price)?,
             qty: Decimal::from_str_exact(&mr.quantity)?,
-            direction: pb::Direction::from_i32(mr.direction).ok_or("unknown direction")?,
+            direction: pb::Direction::try_from(mr.direction).map_err(|_| "unknown direction")?,
             taker_order_id: mr.taker_order_id.clone(),
             taker_account_id: mr.taker_account_id,
-            taker_state: pb::OrderState::from_i32(mr.taker_state).ok_or("unknown order state")?,
+            taker_state: pb::OrderState::try_from(mr.taker_state)
+                .map_err(|_| "unknown order state")?,
             maker_order_id: mr.maker_order_id.clone(),
             maker_account_id: mr.maker_account_id,
-            maker_state: pb::OrderState::from_i32(mr.maker_state).ok_or("unknown order state")?,
+            maker_state: pb::OrderState::try_from(mr.maker_state)
+                .map_err(|_| "unknown order state")?,
             is_taker_fulfilled: mr.is_taker_fulfilled,
             is_maker_fulfilled: mr.is_maker_fulfilled,
             trade_pair: mr.trade_pair.clone().ok_or("missing trade pair")?.into(),
@@ -348,10 +352,11 @@ impl CancelOrderResult {
             is_cancel_success: cr.order_state == pb::OrderState::Cancelled as i32,
             err_msg: None,
             trade_pair: TradePair::new(&trade_pair.base, &trade_pair.quote),
-            direction: pb::Direction::from_i32(cr.direction).ok_or("unknown direction")?,
+            direction: pb::Direction::try_from(cr.direction).map_err(|_| "unknown direction")?,
             order_id: cr.order_id.clone(),
             account_id: cr.account_id,
-            order_state: pb::OrderState::from_i32(cr.order_state).ok_or("unknown order state")?,
+            order_state: pb::OrderState::try_from(cr.order_state)
+                .map_err(|_| "unknown order state")?,
         })
     }
 }

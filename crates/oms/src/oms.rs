@@ -555,13 +555,13 @@ impl OMS {
                 "invalid fill quantity",
             )
         })?;
-        let taker_state = OrderState::from_i32(record.taker_state).ok_or_else(|| {
+        let taker_state = OrderState::try_from(record.taker_state).map_err(|_| {
             OMSErr::new(
                 err_code::ERR_OMS_MATCH_RESULT_FAILED,
                 "invalid taker order state",
             )
         })?;
-        let maker_state = OrderState::from_i32(record.maker_state).ok_or_else(|| {
+        let maker_state = OrderState::try_from(record.maker_state).map_err(|_| {
             OMSErr::new(
                 err_code::ERR_OMS_MATCH_RESULT_FAILED,
                 "invalid maker order state",
@@ -666,8 +666,10 @@ impl OMSRpcHandler for OMS {
         trade_pair: &TradePair,
         cmd: oms::RpcCmd,
     ) -> Result<OMSChangeResult, OMSErr> {
-        match BizAction::from_i32(cmd.biz_action) {
-            Some(oms::BizAction::PlaceOrder) => {
+        match BizAction::try_from(cmd.biz_action)
+            .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "Unsupported biz_action"))?
+        {
+            oms::BizAction::PlaceOrder => {
                 let mut req = cmd.place_order_req.ok_or_else(|| {
                     OMSErr::new(
                         err_code::ERR_INVALID_REQUEST,
@@ -738,7 +740,7 @@ impl OMSRpcHandler for OMS {
                     }),
                 })
             }
-            Some(BizAction::CancelOrder) => {
+            BizAction::CancelOrder => {
                 // 检查是否以及cancel了
                 let req = cmd.cancel_order_req.as_ref().ok_or_else(|| {
                     OMSErr::new(
@@ -882,24 +884,22 @@ impl OrderBuilder {
             trade_pair: order.trade_pair.clone().ok_or_else(|| {
                 OMSErr::new(err_code::ERR_INVALID_REQUEST, "Missing field trade_pair")
             })?,
-            direction: Direction::from_i32(order.direction)
-                .ok_or_else(|| OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid direction"))?,
+            direction: Direction::try_from(order.direction)
+                .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid direction"))?,
             price: Decimal::from_str(&order.price)
                 .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "Invalid price"))?,
             target_qty: Decimal::from_str(&order.quantity)
                 .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "Invalid quantity"))?,
             post_only: order.post_only,
-            order_type: OrderType::from_i32(order.order_type)
-                .ok_or_else(|| OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid order type"))?,
+            order_type: OrderType::try_from(order.order_type)
+                .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid order type"))?,
             trade_id: trade_id,
             prev_trade_id: prev_trade_id,
-            time_in_force: TimeInForce::from_i32(order.time_in_force).ok_or_else(|| {
-                OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid time in force")
-            })?,
+            time_in_force: TimeInForce::try_from(order.time_in_force)
+                .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid time in force"))?,
             create_time: order.create_time,
-            stp_strategy: oms::StpStrategy::from_i32(order.stp_strategy).ok_or_else(|| {
-                OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid stp strategy")
-            })?,
+            stp_strategy: oms::StpStrategy::try_from(order.stp_strategy)
+                .map_err(|_| OMSErr::new(err_code::ERR_INVALID_REQUEST, "invalid stp strategy"))?,
             version: order.version,
         })
     }

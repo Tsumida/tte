@@ -19,37 +19,36 @@ mod tests {
         map: HashMap<String, String>,
     }
 
-    impl Into<Vec<u8>> for HashMapInner {
-        fn into(self) -> Vec<u8> {
-            serde_json::to_vec(&self.map).unwrap()
+    impl TryInto<Vec<u8>> for HashMapInner {
+        type Error = anyhow::Error;
+        fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+            Ok(serde_json::to_vec(&self.map).unwrap())
         }
     }
 
-    impl From<Vec<u8>> for HashMapInner {
-        fn from(data: Vec<u8>) -> Self {
+    impl TryFrom<&[u8]> for HashMapInner {
+        type Error = anyhow::Error;
+        fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
             let map: HashMap<String, String> = serde_json::from_slice(&data).unwrap();
-            HashMapInner { map }
+            Ok(HashMapInner { map })
         }
     }
 
     impl AppStateMachine for HashMapInner {
         type Input = crate::types::AppStateMachineInput;
-        type Output = crate::types::AppStateMachineOutput;
+        type Output = Vec<u8>;
 
-        fn apply(
-            &mut self,
-            req: Self::Input,
-        ) -> anyhow::Result<crate::types::AppStateMachineOutput> {
-            let key = serde_json::from_slice::<String>(&req.0)?;
+        fn apply(&mut self, req: Self::Input) -> anyhow::Result<Vec<u8>> {
+            let key = serde_json::from_slice::<String>(&req.data)?;
             self.map.insert(key.clone(), key.clone());
-            Ok(crate::types::AppStateMachineOutput(b"ok".to_vec()))
+            Ok(b"ok".to_vec())
         }
 
         fn take_snapshot(&self) -> Vec<u8> {
             serde_json::to_vec(&self.map).unwrap()
         }
 
-        fn from_snapshot(data: Vec<u8>) -> Result<Self, anyhow::Error>
+        fn from_snapshot(data: &[u8]) -> Result<Self, anyhow::Error>
         where
             Self: Sized,
         {

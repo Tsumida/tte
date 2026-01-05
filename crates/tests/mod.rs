@@ -54,8 +54,8 @@ mod me {
     ) -> (AppConfig, TradePair, RaftSequencerConfig) {
         let base = "BTC";
         let quote = "USDT";
-        let mut config = AppConfig::dev();
-        config
+        let mut app_config = AppConfig::dev();
+        app_config
             .with_kafka_producer(
                 &format!("match_result_{}{}", base, quote),
                 ProducerConfig {
@@ -76,8 +76,8 @@ mod me {
                     auto_offset_reset: "earliest".to_string(), // auto
                 },
             );
-        let raft_config = RaftSequencerConfig::test(db_path, snapshot_path); // todo: from AppConfig
-        (config, TradePair::new(base, quote), raft_config)
+        let sequencer_config = RaftSequencerConfig::test(db_path, snapshot_path); // todo: from AppConfig
+        (app_config, TradePair::new(base, quote), sequencer_config)
     }
 
     struct TestSuiteBuilder {}
@@ -113,7 +113,7 @@ mod me {
             }
 
             let td = TempDir::new_in(dir).unwrap();
-            let (_, trade_pair, raft_config) =
+            let (_, trade_pair, sequencer_config) =
                 test_config(td.path().to_str().unwrap(), snapshot_dir.to_str().unwrap());
             let batch_size = 32;
             let (match_result_sender, _) =
@@ -125,10 +125,18 @@ mod me {
                 CmdWrapper<MatchCmdOutput>,
                 AllowAllEgress,
             >::new()
-            .with_node_id(*raft_config.node_id())
+            .with_node_id(*sequencer_config.node_id())
             .with_db_path(td.path().to_path_buf())
             .with_snapshot_path(td.path().to_path_buf().join("snapshots")) // 测试场景放同一个目录
-            .with_nodes(raft_config.nodes().clone())
+            .with_nodes(sequencer_config.nodes().clone())
+            .with_raft_config(tte_rlr::Config {
+                heartbeat_interval: 500,
+                election_timeout_min: 1500,
+                election_timeout_max: 3000,
+                max_payload_entries: 1024,
+                snapshot_policy: tte_rlr::SnapshotPolicy::LogsSinceLast(10000),
+                ..Default::default()
+            })
             .with_request_receiver(req_recv)
             .with_state_machine(OrderBook::new(trade_pair.clone()))
             .with_egress(AllowAllEgress::new(match_result_sender))

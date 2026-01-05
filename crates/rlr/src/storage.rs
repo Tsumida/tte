@@ -2,7 +2,6 @@
 
 use std::fmt::Debug;
 use std::io;
-use std::io::Cursor;
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
 use std::path::Path;
@@ -290,7 +289,7 @@ struct InnerSnapshot {
 impl From<Snapshot<AppTypeConfig>> for InnerSnapshot {
     fn from(snap: Snapshot<AppTypeConfig>) -> Self {
         InnerSnapshot {
-            data: snap.snapshot.get_ref().clone(),
+            data: snap.snapshot,
             membership: snap.meta.last_membership.membership().clone(),
             membership_log_id: snap.meta.last_membership.log_id().clone(),
             last_applied_log_id: snap.meta.last_log_id,
@@ -309,7 +308,7 @@ impl Into<Snapshot<AppTypeConfig>> for InnerSnapshot {
                     self.membership,
                 ),
             },
-            snapshot: Cursor::new(self.data),
+            snapshot: self.data,
         }
     }
 }
@@ -446,7 +445,7 @@ impl RaftSnapshotBuilder<AppTypeConfig> for AppSnapshotBuilder<AppTypeConfig> {
                     self.membership.clone(),
                 ),
             },
-            snapshot: Cursor::new(self.data.clone()),
+            snapshot: self.data.clone(),
         };
 
         // 更新 current_snapshot

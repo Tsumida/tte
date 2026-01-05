@@ -2,34 +2,7 @@ use crate::{
     orderbook::OrderBook,
     types::{CmdWrapper, MatchCmd, MatchCmdOutput},
 };
-use tte_rlr::AppStateMachine;
-
-impl TryFrom<&tte_rlr::AppStateMachineInput> for CmdWrapper<MatchCmd> {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &tte_rlr::AppStateMachineInput) -> Result<Self, Self::Error> {
-        let cmd_wrapper: CmdWrapper<MatchCmd> = serde_json::from_slice(&value.0)?;
-        Ok(cmd_wrapper)
-    }
-}
-
-impl TryInto<tte_rlr::AppStateMachineOutput> for CmdWrapper<MatchCmdOutput> {
-    type Error = anyhow::Error;
-
-    fn try_into(self) -> Result<tte_rlr::AppStateMachineOutput, Self::Error> {
-        let data = serde_json::to_vec(self.inner())?;
-        Ok(tte_rlr::AppStateMachineOutput(data))
-    }
-}
-
-impl TryFrom<tte_rlr::AppStateMachineOutput> for CmdWrapper<MatchCmdOutput> {
-    type Error = anyhow::Error;
-
-    fn try_from(value: tte_rlr::AppStateMachineOutput) -> Result<Self, Self::Error> {
-        let cmd_wrapper: CmdWrapper<MatchCmdOutput> = serde_json::from_slice(&value.0)?;
-        Ok(cmd_wrapper)
-    }
-}
+use tte_rlr::{AppStateMachine, AppStateMachineInput, AppStateMachineOutput};
 
 impl AppStateMachine for OrderBook {
     type Input = CmdWrapper<MatchCmd>;
@@ -76,11 +49,74 @@ impl AppStateMachine for OrderBook {
         })
     }
 
-    fn from_snapshot(data: Vec<u8>) -> Result<Self, anyhow::Error> {
-        Ok(serde_json::from_slice(&data)?)
+    fn from_snapshot(data: &[u8]) -> Result<Self, anyhow::Error> {
+        Ok(serde_json::from_slice(data)?)
     }
 
     fn take_snapshot(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap()
+    }
+}
+
+impl TryFrom<&[u8]> for CmdWrapper<MatchCmd> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let cmd_wrapper: CmdWrapper<MatchCmd> = serde_json::from_slice(value)?;
+        Ok(cmd_wrapper)
+    }
+}
+
+impl TryFrom<&[u8]> for CmdWrapper<MatchCmdOutput> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let cmd_wrapper: CmdWrapper<MatchCmdOutput> = serde_json::from_slice(value)?;
+        Ok(cmd_wrapper)
+    }
+}
+
+impl TryInto<Vec<u8>> for CmdWrapper<MatchCmd> {
+    type Error = anyhow::Error;
+
+    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+        let data = serde_json::to_vec(&self)?;
+        Ok(data)
+    }
+}
+
+impl TryInto<AppStateMachineInput> for CmdWrapper<MatchCmd> {
+    type Error = anyhow::Error;
+
+    fn try_into(self) -> Result<AppStateMachineInput, Self::Error> {
+        let data = serde_json::to_vec(&self)?;
+        Ok(AppStateMachineInput { data })
+    }
+}
+
+impl TryInto<Vec<u8>> for CmdWrapper<MatchCmdOutput> {
+    type Error = anyhow::Error;
+
+    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+        let data = serde_json::to_vec(&self)?;
+        Ok(data)
+    }
+}
+
+impl TryFrom<AppStateMachineInput> for CmdWrapper<MatchCmd> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: AppStateMachineInput) -> Result<Self, Self::Error> {
+        let cmd_wrapper: CmdWrapper<MatchCmd> = serde_json::from_slice(&value.data)?;
+        Ok(cmd_wrapper)
+    }
+}
+
+impl TryFrom<AppStateMachineOutput> for CmdWrapper<MatchCmdOutput> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: AppStateMachineOutput) -> Result<Self, Self::Error> {
+        let cmd_wrapper: CmdWrapper<MatchCmdOutput> = serde_json::from_slice(&value.data)?;
+        Ok(cmd_wrapper)
     }
 }

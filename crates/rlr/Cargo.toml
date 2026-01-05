@@ -23,6 +23,7 @@ prost = { workspace = true }
 tonic = { workspace = true}
 uuid = { workspace = true, features = ["v4"] }
 tracing-subscriber = { workspace = true }
+tonic-prost.workspace = true
 
 # use fork in https://github.com/Tsumida/openraft/tree/main
 openraft = { workspace = true }
@@ -31,5 +32,4 @@ rocksdb = { workspace = true}
 
 [build-dependencies]
 # 构建依赖，由 build.rs 使用
-prost-build = "0.12"
-tonic-build = "0.9"
+tonic-prost-build = "0.14"

@@ -1,5 +1,6 @@
 mod network;
-mod pbcode;
+pub mod pbcode;
+mod pbext;
 mod rlr;
 mod state_machine;
 mod storage;
@@ -21,12 +22,13 @@ pub use crate::rlr::RlrBuilder;
 pub use crate::storage::RlrLogStore;
 pub use crate::types::AppNodeId;
 
-pub use crate::network::RlrNetworkFactory;
-pub use openraft::BasicNode;
+pub use crate::network::callee::RlrNetworkFactory;
 pub use openraft::Config;
 pub use openraft::Raft;
 pub use openraft::RaftTypeConfig;
+pub use openraft::SnapshotPolicy;
 pub use openraft::storage::RaftStateMachine;
 
+pub use crate::pbcode::raft::Node;
 pub use crate::pbcode::raft::raft_client::RaftClient;
 pub use crate::pbcode::raft::raft_server::RaftServer;

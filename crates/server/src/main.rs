@@ -14,7 +14,7 @@ use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
 use tte_me::orderbook;
 use tte_me::service::MatchEngineService;
 use tte_oms::{oms::OMS, service::TradeSystem};
-use tte_rlr::{RaftServiceClient, RaftServiceServer};
+use tte_rlr::{RaftClient, RaftServer};
 use tte_sequencer::raft::RaftSequencerConfig;
 
 #[tokio::main]
@@ -230,7 +230,7 @@ async fn run_me(
         .nodes()
         .get(&raft_config.node_id())
         .unwrap()
-        .addr
+        .rpc_addr
         .parse()?;
     let pair = TradePair::new(base, quote);
     let (me, _bg_tasks) = MatchEngineService::run_match_engine(

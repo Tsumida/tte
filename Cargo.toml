@@ -19,9 +19,11 @@ members = [
 ]
 
 [workspace.dependencies]
-rust_decimal ={ version = "1.39" }
-tonic = "0.9"
-prost = "0.11"
+rust_decimal = { version = "1.39" }
+tonic = {version = "0.14"}
+prost = { version = "0.14" }
+tonic-prost = { version = "0.14" }
+tonic-prost-build = { version = "0.14" }
 tokio = { version = "1.48", features = ["full"] }
 rust_decimal_macros = "1.39.0"
 log = "0.4"
@@ -48,7 +50,6 @@ async-trait = "0.1.68"
 serde_json = "1.0.145"
 lazy_static = "1.5.0"
 clap = { version = "4.5.53", features = ["derive"] }
-tonic-build = "0.9"
 openraft = { git = "https://github.com/Tsumida/openraft.git", branch = "main", features = ["serde", "tracing-log", "type-alias"]}
 thiserror = "1.0.68"
 byteorder = "1.4.3"
@@ -57,5 +58,4 @@ anyhow = "1.0.100"
 tempfile = { version = "3.4.0" }
 
 [build-dependencies]
-prost-build = "0.12"
-tonic-build = "0.9"
+tonic-prost-build = "0.14"

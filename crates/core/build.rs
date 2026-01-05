@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+
 //！ Builder for the whole trade engine
-use tonic_build;
+use tonic_prost_build::configure;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -17,12 +19,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect::<Vec<_>>();
 
-    let _ = tonic_build::configure()
+    let _ = configure()
         .build_server(true)
         .build_client(true)
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("TradePair", "#[derive(Eq, Hash)]")
+        // .type_attribute("TradePair", "#[derive(Eq, Hash)]")
         .out_dir(out_dir)
-        .compile(&proto_files, &[proto_path])?;
+        .compile_protos(&proto_files, &[PathBuf::from(proto_path)])?;
     Ok(())
 }

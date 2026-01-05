@@ -1,28 +1,29 @@
-use std::{io::Cursor, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use futures::TryStreamExt;
 use openraft::{
-    Membership, RaftTypeConfig, Snapshot, alias::SnapshotDataOf, storage::RaftStateMachine,
+    Membership, RaftTypeConfig, Snapshot, alias::SnapshotDataOf, entry::RaftEntry,
+    storage::RaftStateMachine,
 };
 use tokio::sync::RwLock;
 use tracing::instrument;
 
 use crate::{
+    pbcode::raft as pb,
     storage::AppSnapshotBuilder,
     types::{AppStateMachineOutput, AppTypeConfig},
 };
 
 // 业务状态机抽象
 pub trait AppStateMachine: Send + Sync + 'static {
-    type Input: for<'a> TryFrom<&'a <AppTypeConfig as RaftTypeConfig>::D> + Send + 'static;
-    type Output: TryInto<<AppTypeConfig as RaftTypeConfig>::R> + Send + 'static;
+    type Input: for<'a> TryFrom<&'a [u8]> + Send + 'static;
+    type Output: TryInto<Vec<u8>> + Send + 'static;
 
     // Atomic apply one entry, if failed, state machine keep unchanged.
     fn apply(&mut self, req: Self::Input) -> anyhow::Result<Self::Output>;
-
     // todo: replace with TryFrom<&[u8]> and TryInto<Vec<u8>>
     fn take_snapshot(&self) -> Vec<u8>;
-    fn from_snapshot(data: Vec<u8>) -> Result<Self, anyhow::Error>
+    fn from_snapshot(data: &[u8]) -> Result<Self, anyhow::Error>
     where
         Self: Sized;
 }
@@ -90,55 +91,68 @@ impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHand
     {
         while let Some((entry, responder)) = entries.try_next().await? {
             // AppEntry -> StateMachine -> AppResponse, Openraft不关心
+            let log_id = entry.log_id();
             let mut self_meta = self.raft_meta.write().await;
             if let Some(prev) = self_meta.last_applied_log_id {
-                if prev >= entry.log_id {
+                if prev >= log_id {
                     tracing::warn!(
                         "skip applying log id {:?}, last_applied_log_id={:?}",
-                        entry.log_id,
+                        log_id,
                         self_meta.last_applied_log_id
                     );
                     if let Some(r) = responder {
-                        let _ = r.send(AppStateMachineOutput(b"skipped".to_vec()));
+                        let _ = r.send(AppStateMachineOutput {
+                            data: b"skipped".to_vec(),
+                        });
                     }
                     continue;
                 }
             }
-            self_meta.last_applied_log_id = Some(entry.log_id);
+            self_meta.last_applied_log_id = Some(log_id);
             // the entry is ok to apply
-            let rsp = match &entry.payload {
-                openraft::EntryPayload::Normal(input) => {
-                    // perf: 去掉这一步的反序列化
-                    // todo: 假设反序列化失败
-                    let converted_input = <S::Input>::try_from(input).map_err(|_| {
+            let rsp = match &entry.entry_type {
+                x if *x == pb::EntryType::Blank as u32 => AppStateMachineOutput {
+                    data: b"ok".to_vec(),
+                },
+                x if *x == pb::EntryType::Normal as u32 => {
+                    let input = S::Input::try_from(&entry.data[..]).map_err(|_| {
                         std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
                             "failed to convert input",
                         )
                     })?;
-                    self.data
-                        .write()
-                        .await
-                        .apply(converted_input)
-                        .map_err(|e| {
-                            tracing::error!("failed to apply entry: {}", e);
-                            std::io::Error::new(std::io::ErrorKind::Other, e)
-                        })?
-                        .try_into()
-                        .map_err(|_| {
+                    let output = self.data.write().await.apply(input).map_err(|e| {
+                        tracing::error!("failed to apply entry: {}", e);
+                        std::io::Error::new(std::io::ErrorKind::Other, e)
+                    })?;
+                    let data = output.try_into().map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "failed to convert output",
+                        )
+                    })?;
+                    AppStateMachineOutput { data }
+                }
+                x if *x == pb::EntryType::Membership as u32 => {
+                    let m: openraft::Membership<AppTypeConfig> =
+                        entry.membership.unwrap().try_into().map_err(|_| {
                             std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
-                                "failed to convert output",
+                                "failed to convert membership",
                             )
-                        })?
-                }
-                openraft::EntryPayload::Membership(m) => {
+                        })?;
                     self_meta.effective_membership =
-                        openraft::StoredMembership::new(Some(entry.log_id), m.clone());
-                    AppStateMachineOutput(b"ok".to_vec())
+                        openraft::StoredMembership::new(Some(log_id), m.clone());
+                    AppStateMachineOutput {
+                        data: b"ok".to_vec(),
+                    }
                 }
-                // ignore blank
-                openraft::EntryPayload::Blank => AppStateMachineOutput(Vec::new()),
+                _ => {
+                    tracing::error!("unknown entry type: {}", entry.entry_type);
+                    AppStateMachineOutput {
+                        data: b"unknown entry type".to_vec(),
+                    }
+                }
             };
 
             if let Some(r) = responder {
@@ -164,7 +178,7 @@ impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHand
     async fn begin_receiving_snapshot(
         &mut self,
     ) -> Result<SnapshotDataOf<AppTypeConfig>, std::io::Error> {
-        Ok(Cursor::new(Vec::new()))
+        Ok(Vec::new())
     }
 
     async fn install_snapshot(
@@ -181,13 +195,12 @@ impl<S: AppStateMachine> RaftStateMachine<AppTypeConfig> for AppStateMachineHand
         raft_meta.last_applied_log_id = meta.last_log_id;
         raft_meta.effective_membership = meta.last_membership.clone();
         // 更新业务状态机
-        *data =
-            <S as AppStateMachine>::from_snapshot(snapshot.get_ref().to_vec()).map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("failed to install snapshot: {}", e),
-                )
-            })?;
+        *data = <S as AppStateMachine>::from_snapshot(&snapshot).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("failed to install snapshot: {}", e),
+            )
+        })?;
         // 更新快照
         *current_snapshot = Some(Snapshot {
             meta: meta.clone(),

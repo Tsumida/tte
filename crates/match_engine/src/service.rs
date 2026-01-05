@@ -77,6 +77,14 @@ impl MatchEngineService {
             .with_request_receiver(req_recv)
             .with_state_machine(orderbook)
             .with_egress(AllowAllEgress::new(match_result_sender))
+            .with_raft_config(tte_rlr::Config {
+                heartbeat_interval: 500,
+                election_timeout_min: 1500,
+                election_timeout_max: 3000,
+                max_payload_entries: 1024,
+                snapshot_policy: tte_rlr::SnapshotPolicy::LogsSinceLast(10000),
+                ..Default::default()
+            })
             .build()
             .await
             .expect("build sequencer");

@@ -1,3 +1,6 @@
+use crate::api::SequenceEntry;
+use futures::TryStreamExt;
+use getset::Getters;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -6,16 +9,14 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-
-use crate::api::SequenceEntry;
-use futures::TryStreamExt;
-use getset::Getters;
 use tokio::sync::oneshot;
 use tonic::async_trait;
 use tte_rlr::{
     AppNodeId, AppStateMachine, AppStateMachineHandler, AppStateMachineInput, AppTypeConfig,
-    BasicNode, RaftStateMachine, RaftTypeConfig, Rlr, RlrBuilder, RlrLogStore, RlrNetworkFactory,
+    RaftStateMachine, RaftTypeConfig, Rlr, RlrBuilder, RlrLogStore, RlrNetworkFactory,
 };
+
+use tte_rlr::pbcode::raft as pb;
 
 #[derive(Clone, Debug, Getters)]
 pub struct RaftSequencerConfig {
@@ -26,7 +27,7 @@ pub struct RaftSequencerConfig {
     #[getset(get = "pub")]
     node_id: AppNodeId,
     #[getset(get = "pub")]
-    nodes: HashMap<AppNodeId, BasicNode>,
+    nodes: HashMap<AppNodeId, pb::Node>,
 }
 
 impl RaftSequencerConfig {
@@ -47,7 +48,13 @@ impl RaftSequencerConfig {
                 .parse()
                 .expect("Invalid node ID in RAFT_NODES");
             let addr = parts.next().expect("Invalid RAFT_NODES format").to_string();
-            nodes.insert(id, BasicNode::new(addr));
+            nodes.insert(
+                id,
+                pb::Node {
+                    node_id: id,
+                    rpc_addr: addr,
+                },
+            );
         }
 
         let db_path = std::env::var("RAFT_DB_PATH")?;
@@ -69,9 +76,28 @@ impl RaftSequencerConfig {
         let node_id: AppNodeId = 1;
 
         let mut nodes = HashMap::new();
-        nodes.insert(1, BasicNode::new("127.0.0.1:7001".to_string()));
-        nodes.insert(2, BasicNode::new("127.0.0.1:7002".to_string()));
-        nodes.insert(3, BasicNode::new("127.0.0.1:7003".to_string()));
+        nodes.insert(
+            1,
+            pb::Node {
+                node_id: 1,
+                rpc_addr: "127.0.0.1:7001".to_string(),
+            },
+        );
+        nodes.insert(
+            2,
+            pb::Node {
+                node_id: 2,
+                rpc_addr: "127.0.0.1:7002".to_string(),
+            },
+        );
+        nodes.insert(
+            3,
+            pb::Node {
+                node_id: 3,
+                rpc_addr: "127.0.0.1:7003".to_string(),
+            },
+        );
+
         Self {
             db_path: db_path.to_string(),
             node_id,
@@ -84,24 +110,26 @@ impl RaftSequencerConfig {
 pub struct RaftSequencerBuilder<S, D, R, E>
 where
     S: AppStateMachine,
-    D: Into<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
+    D: TryInto<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
     R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync,
     E: EgressController<R>,
 {
     node_id: Option<<AppTypeConfig as RaftTypeConfig>::NodeId>,
     db_path: Option<PathBuf>,
     snapshot_path: Option<PathBuf>,
-    nodes: HashMap<<AppTypeConfig as RaftTypeConfig>::NodeId, BasicNode>,
+    nodes: HashMap<<AppTypeConfig as RaftTypeConfig>::NodeId, pb::Node>,
     req_recv: Option<tokio::sync::mpsc::Receiver<D>>,
     egress: Option<E>,
     state_machine: Option<S>,
+    raft_config: Option<tte_rlr::Config>,
+
     _r: std::marker::PhantomData<R>,
 }
 
 impl<S, D, R, E> RaftSequencerBuilder<S, D, R, E>
 where
     S: AppStateMachine,
-    D: Into<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
+    D: TryInto<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
     R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync,
     E: EgressController<R>,
 {
@@ -114,6 +142,7 @@ where
             req_recv: None,
             egress: None,
             state_machine: None,
+            raft_config: None,
             _r: std::marker::PhantomData,
         }
     }
@@ -135,7 +164,7 @@ where
 
     pub fn with_nodes(
         mut self,
-        nodes: HashMap<<AppTypeConfig as RaftTypeConfig>::NodeId, BasicNode>,
+        nodes: HashMap<<AppTypeConfig as RaftTypeConfig>::NodeId, pb::Node>,
     ) -> Self {
         self.nodes = nodes;
         self
@@ -156,6 +185,11 @@ where
         self
     }
 
+    pub fn with_raft_config(mut self, raft_config: tte_rlr::Config) -> Self {
+        self.raft_config = Some(raft_config);
+        self
+    }
+
     pub async fn build_components(
         self,
     ) -> Result<
@@ -172,6 +206,7 @@ where
         let snapshot_dir = self.snapshot_path.expect("snapshot_path is required");
         let state_machine = self.state_machine.expect("state machine is required");
         RlrBuilder::new()
+            .with_raft_config(self.raft_config.expect("expect raft config"))
             .build_components_only::<S>(
                 Path::new(&db_path),
                 Path::new(&snapshot_dir),
@@ -189,6 +224,7 @@ where
         let egress = self.egress.expect("egress controller is required");
         let state_machine = self.state_machine.expect("state machine is required");
         let rlr = RlrBuilder::new()
+            .with_raft_config(self.raft_config.unwrap())
             .build::<S>(
                 node_id,
                 Path::new(&db_path),
@@ -213,7 +249,7 @@ where
 #[derive(Getters)]
 pub struct RaftSequencer<
     S: AppStateMachine,
-    D: Into<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
+    D: TryInto<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
     R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync,
     E: EgressController<R>,
 > {
@@ -230,8 +266,8 @@ pub struct RaftSequencer<
 impl<S, D, R, E> RaftSequencer<S, D, R, E>
 where
     S: AppStateMachine,
-    D: Into<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone,
-    R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync,
+    D: TryInto<<AppTypeConfig as RaftTypeConfig>::D> + SequenceEntry + Clone + std::fmt::Debug,
+    R: TryFrom<<AppTypeConfig as RaftTypeConfig>::R> + Send + Sync + std::fmt::Debug,
     E: EgressController<R>,
 {
     pub async fn load_last_seq_id(&mut self) -> Result<u64, anyhow::Error> {
@@ -255,7 +291,8 @@ where
         self.seq_id.fetch_max(last_applied_log_id, Ordering::SeqCst)
     }
 
-    async fn read_batch(&mut self, batch: &mut Vec<D>, batch_size: usize) {
+    async fn read_batch(&mut self, batch_size: usize) -> Result<Vec<D>, anyhow::Error> {
+        let mut batch = Vec::with_capacity(batch_size);
         while batch.len() < batch_size {
             if let Ok(entry) = self.req_recv.try_recv() {
                 batch.push(entry);
@@ -265,42 +302,48 @@ where
                     batch.push(entry);
                 } else {
                     tracing::error!("RaftSequencer: request channel closed");
-                    return; // Channel closed
+                    return Err(anyhow::anyhow!("RaftSequencer: request channel closed"));
                 }
             } else {
                 break;
             }
         }
+        Ok(batch)
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self) -> Result<(), anyhow::Error> {
         let batch_size = 32;
-        let mut batch: Vec<D> = Vec::with_capacity(batch_size);
         loop {
-            self.read_batch(&mut batch, batch_size).await;
+            let batch = self.read_batch(batch_size).await?;
             if batch.is_empty() {
                 continue;
             }
-            // todo: seq_id应该要维护在statemachine里
-            // propose分配seq_id, 但未持久化, 只有commit后通过append_entries更新seq_id. 不能让日志形成空洞, 不然后续
+            // todo: 格外注意
+            // propose分配seq_id, 但未持久化, 只有commit后通过append_entries更新seq_id. 不能让日志形成空洞, 不然同步会有问题
             let mut current_seq = self.seq_id.load(Ordering::SeqCst);
-            let inputs: Vec<AppStateMachineInput> = batch
-                .iter()
-                .map(|entry| {
-                    let next_seq = current_seq + 1;
-                    let mut req = entry.clone();
-                    req.set_seq_id(next_seq, current_seq);
-                    current_seq = next_seq;
-                    req.into()
-                })
-                .collect();
+            // req已经持久化, 因此处理失败将 不会处理.
+            let mut inputs: Vec<AppStateMachineInput> = Vec::with_capacity(batch.len());
+            for (i, mut req) in batch.into_iter().enumerate() {
+                let next_seq = current_seq + 1;
+                req.set_seq_id(next_seq, current_seq);
+                current_seq = next_seq;
+                match req.try_into() {
+                    Err(_) => {
+                        // todo: metric
+                        tracing::error!("RaftSequencer: failed to serialize request: idx={}", i,);
+                    }
+                    Ok(input) => {
+                        inputs.push(input);
+                    }
+                }
+            }
 
             if let Err(fatal_err) = self.batch_propose(inputs).await {
                 panic!("RaftSequencer fatal error: {:?}", fatal_err);
             }
-
-            batch.clear();
         }
+
+        Ok(())
     }
 
     async fn batch_propose(&self, inputs: Vec<AppStateMachineInput>) -> Result<(), anyhow::Error> {
