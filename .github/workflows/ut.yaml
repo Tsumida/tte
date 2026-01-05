@@ -29,13 +29,14 @@ jobs:
         # 使用 apt-get 安装 protobuf-compiler
         sudo apt-get update
         sudo apt-get install -y protobuf-compiler
+        
+    - name: Vendor
+      run: cargo vendor
 
     - name: ⚙️ Build/Cache Dependencies
       uses: actions-rs/cargo@v1
       with:
         command: check
-    - name: Vendor
-      run: cargo vendor
       
     - name: 🧪 Run Unit Tests (make ut)
       run: make ut
