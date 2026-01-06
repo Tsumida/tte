@@ -17,6 +17,7 @@ pub use crate::types::AppStateMachineInput;
 pub use crate::types::AppStateMachineOutput;
 pub use crate::types::AppTypeConfig;
 
+pub use crate::rlr::RaftService;
 pub use crate::rlr::Rlr;
 pub use crate::rlr::RlrBuilder;
 pub use crate::storage::RlrLogStore;

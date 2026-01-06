@@ -23,6 +23,7 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
     zlib1g-dev \
     ca-certificates \
     protobuf-compiler \
+    libprotobuf-dev \
     clang \
     libclang-dev \
     llvm-dev && \

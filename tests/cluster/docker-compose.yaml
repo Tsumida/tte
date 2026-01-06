@@ -64,6 +64,7 @@ services:
       - SERVER_MODE=oms
       - TRACE_ENDPOINT=http://jaeger:4317
       - GRPC_SERVER_ENDPOINT=0.0.0.0:8080
+      - ME_RAFT_NODES="1@me_BTCUSDT_1:6001,2@me_BTCUSDT_2:6002,3@me_BTCUSDT_3:6003" # 监听窗口
       - ENV=dev
     ports:
       - "8080:8080"
@@ -119,7 +120,7 @@ services:
       - RAFT_DB_PATH=/data/me_BTCUSDT_2/db
       - RAFT_SNAPSHOT_PATH=/data/me_BTCUSDT_2/snapshots
     ports:
-      - "8081:8081" # rpc port
+      - "8082:8081" # rpc port
       - "6002:6001" # raft port
     depends_on:
       jaeger:
@@ -146,7 +147,7 @@ services:
       - RAFT_DB_PATH=/data/me_BTCUSDT_3/db
       - RAFT_SNAPSHOT_PATH=/data/me_BTCUSDT_3/snapshots
     ports:
-      - "8081:8081" # rpc port
+      - "8083:8081" # rpc port
       - "6003:6001" # raft port
     depends_on:
       jaeger:

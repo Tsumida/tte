@@ -11,6 +11,7 @@ use tte_core::{
     pbcode::oms::{self},
     types::{BatchMatchReqTransfer, BatchMatchResultTransfer, TradePair},
 };
+use tte_rlr::RaftService;
 
 use crate::{
     egress::AllowAllEgress,
@@ -47,6 +48,7 @@ impl MatchEngineService {
                 CmdWrapper<MatchCmdOutput>,
                 AllowAllEgress,
             >,
+            RaftService,
             MatchResultProducer,
         ),
         OrderBookErr,
@@ -102,10 +104,12 @@ impl MatchEngineService {
             .build()
             .expect("create consumer");
 
+        let raft_node = sequencer.raft().clone();
         Ok((
             req_send,
             match_req_consumer,
             sequencer,
+            RaftService::new(raft_node),
             match_result_producer,
         ))
     }
@@ -116,8 +120,8 @@ impl MatchEngineService {
         orderbook: OrderBook, // todo: 从DB加载快照
         producer_cfgs: HashMap<String, ProducerConfig>,
         consumer_cfgs: HashMap<String, ConsumerConfig>,
-    ) -> Result<(Self, Vec<JoinHandle<()>>), OrderBookErr> {
-        let (req_send, match_req_consumer, mut match_engine, match_result_producer) =
+    ) -> Result<(Self, RaftService, Vec<JoinHandle<()>>), OrderBookErr> {
+        let (req_send, match_req_consumer, mut match_engine, raft_service, match_result_producer) =
             Self::build_component(
                 raft_config,
                 trade_pair,
@@ -136,7 +140,9 @@ impl MatchEngineService {
                 match_req_consumer.run().await;
             }),
             tokio::spawn(async move {
-                match_engine.run().await;
+                if let Err(e) = match_engine.run().await {
+                    tracing::error!("Match engine error: {}", e);
+                }
             }),
             tokio::spawn(async move {
                 match_result_producer.run().await;
@@ -148,6 +154,7 @@ impl MatchEngineService {
             MatchEngineService {
                 submit_sender: req_send,
             },
+            raft_service,
             handlers,
         ))
     }

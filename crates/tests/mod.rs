@@ -30,7 +30,7 @@ mod me {
         let _ = config.init_tracer().await?;
         config.print_args();
 
-        let (svc, handlers) = MatchEngineService::run_match_engine(
+        let (svc, _, handlers) = MatchEngineService::run_match_engine(
             raft_config,
             trade_pair.clone(),
             orderbook::OrderBook::new(trade_pair.clone()),

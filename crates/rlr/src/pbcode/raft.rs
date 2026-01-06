@@ -227,7 +227,7 @@ pub struct ChangeMembershipReq {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ClientWriteRsp {
+pub struct MembershipRsp {
     /// The log id of the committed log entry.
     #[prost(message, optional, tag = "1")]
     pub log_id: ::core::option::Option<LogId>,
@@ -470,6 +470,66 @@ pub mod raft_client {
             req.extensions_mut().insert(GrpcMethod::new("raft.Raft", "Snapshot"));
             self.inner.client_streaming(req, path, codec).await
         }
+        /// AddLearner adds a new learner node to the Raft cluster
+        pub async fn add_learner(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AddLearnerReq>,
+        ) -> std::result::Result<tonic::Response<super::MembershipRsp>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/raft.Raft/AddLearner");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("raft.Raft", "AddLearner"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// ChangeMembership modifies the cluster membership configuration
+        pub async fn change_membership(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ChangeMembershipReq>,
+        ) -> std::result::Result<tonic::Response<super::MembershipRsp>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/raft.Raft/ChangeMembership",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("raft.Raft", "ChangeMembership"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Metrics retrieves cluster metrics and status information
+        pub async fn metrics(
+            &mut self,
+            request: impl tonic::IntoRequest<()>,
+        ) -> std::result::Result<tonic::Response<super::MetricsRsp>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/raft.Raft/Metrics");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("raft.Raft", "Metrics"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -517,6 +577,21 @@ pub mod raft_server {
             &self,
             request: tonic::Request<tonic::Streaming<super::SnapshotReq>>,
         ) -> std::result::Result<tonic::Response<super::SnapshotRsp>, tonic::Status>;
+        /// AddLearner adds a new learner node to the Raft cluster
+        async fn add_learner(
+            &self,
+            request: tonic::Request<super::AddLearnerReq>,
+        ) -> std::result::Result<tonic::Response<super::MembershipRsp>, tonic::Status>;
+        /// ChangeMembership modifies the cluster membership configuration
+        async fn change_membership(
+            &self,
+            request: tonic::Request<super::ChangeMembershipReq>,
+        ) -> std::result::Result<tonic::Response<super::MembershipRsp>, tonic::Status>;
+        /// Metrics retrieves cluster metrics and status information
+        async fn metrics(
+            &self,
+            request: tonic::Request<()>,
+        ) -> std::result::Result<tonic::Response<super::MetricsRsp>, tonic::Status>;
     }
     /// InternalService handles internal Raft cluster communication
     #[derive(Debug)]
@@ -774,320 +849,12 @@ pub mod raft_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
-            }
-        }
-    }
-    impl<T> Clone for RaftServer<T> {
-        fn clone(&self) -> Self {
-            let inner = self.inner.clone();
-            Self {
-                inner,
-                accept_compression_encodings: self.accept_compression_encodings,
-                send_compression_encodings: self.send_compression_encodings,
-                max_decoding_message_size: self.max_decoding_message_size,
-                max_encoding_message_size: self.max_encoding_message_size,
-            }
-        }
-    }
-    /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "raft.Raft";
-    impl<T> tonic::server::NamedService for RaftServer<T> {
-        const NAME: &'static str = SERVICE_NAME;
-    }
-}
-/// Generated client implementations.
-pub mod raft_control_plane_client {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
-    /// ApiService provides the key-value store API operations and Raft cluster management operations
-    #[derive(Debug, Clone)]
-    pub struct RaftControlPlaneClient<T> {
-        inner: tonic::client::Grpc<T>,
-    }
-    impl RaftControlPlaneClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
-    }
-    impl<T> RaftControlPlaneClient<T>
-    where
-        T: tonic::client::GrpcService<tonic::body::Body>,
-        T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
-    {
-        pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
-            Self { inner }
-        }
-        pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
-            Self { inner }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> RaftControlPlaneClient<InterceptedService<T, F>>
-        where
-            F: tonic::service::Interceptor,
-            T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
-        {
-            RaftControlPlaneClient::new(InterceptedService::new(inner, interceptor))
-        }
-        /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.send_compressed(encoding);
-            self
-        }
-        /// Enable decompressing responses.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
-        /// AddLearner adds a new learner node to the Raft cluster
-        pub async fn add_learner(
-            &mut self,
-            request: impl tonic::IntoRequest<super::AddLearnerReq>,
-        ) -> std::result::Result<tonic::Response<super::ClientWriteRsp>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/raft.RaftControlPlane/AddLearner",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("raft.RaftControlPlane", "AddLearner"));
-            self.inner.unary(req, path, codec).await
-        }
-        /// ChangeMembership modifies the cluster membership configuration
-        pub async fn change_membership(
-            &mut self,
-            request: impl tonic::IntoRequest<super::ChangeMembershipReq>,
-        ) -> std::result::Result<tonic::Response<super::ClientWriteRsp>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/raft.RaftControlPlane/ChangeMembership",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("raft.RaftControlPlane", "ChangeMembership"));
-            self.inner.unary(req, path, codec).await
-        }
-        /// Metrics retrieves cluster metrics and status information
-        pub async fn metrics(
-            &mut self,
-            request: impl tonic::IntoRequest<()>,
-        ) -> std::result::Result<tonic::Response<super::MetricsRsp>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/raft.RaftControlPlane/Metrics",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("raft.RaftControlPlane", "Metrics"));
-            self.inner.unary(req, path, codec).await
-        }
-    }
-}
-/// Generated server implementations.
-pub mod raft_control_plane_server {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with RaftControlPlaneServer.
-    #[async_trait]
-    pub trait RaftControlPlane: std::marker::Send + std::marker::Sync + 'static {
-        /// AddLearner adds a new learner node to the Raft cluster
-        async fn add_learner(
-            &self,
-            request: tonic::Request<super::AddLearnerReq>,
-        ) -> std::result::Result<tonic::Response<super::ClientWriteRsp>, tonic::Status>;
-        /// ChangeMembership modifies the cluster membership configuration
-        async fn change_membership(
-            &self,
-            request: tonic::Request<super::ChangeMembershipReq>,
-        ) -> std::result::Result<tonic::Response<super::ClientWriteRsp>, tonic::Status>;
-        /// Metrics retrieves cluster metrics and status information
-        async fn metrics(
-            &self,
-            request: tonic::Request<()>,
-        ) -> std::result::Result<tonic::Response<super::MetricsRsp>, tonic::Status>;
-    }
-    /// ApiService provides the key-value store API operations and Raft cluster management operations
-    #[derive(Debug)]
-    pub struct RaftControlPlaneServer<T> {
-        inner: Arc<T>,
-        accept_compression_encodings: EnabledCompressionEncodings,
-        send_compression_encodings: EnabledCompressionEncodings,
-        max_decoding_message_size: Option<usize>,
-        max_encoding_message_size: Option<usize>,
-    }
-    impl<T> RaftControlPlaneServer<T> {
-        pub fn new(inner: T) -> Self {
-            Self::from_arc(Arc::new(inner))
-        }
-        pub fn from_arc(inner: Arc<T>) -> Self {
-            Self {
-                inner,
-                accept_compression_encodings: Default::default(),
-                send_compression_encodings: Default::default(),
-                max_decoding_message_size: None,
-                max_encoding_message_size: None,
-            }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
-        where
-            F: tonic::service::Interceptor,
-        {
-            InterceptedService::new(Self::new(inner), interceptor)
-        }
-        /// Enable decompressing requests with the given encoding.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.accept_compression_encodings.enable(encoding);
-            self
-        }
-        /// Compress responses with the given encoding, if the client supports it.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.send_compression_encodings.enable(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.max_decoding_message_size = Some(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.max_encoding_message_size = Some(limit);
-            self
-        }
-    }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for RaftControlPlaneServer<T>
-    where
-        T: RaftControlPlane,
-        B: Body + std::marker::Send + 'static,
-        B::Error: Into<StdError> + std::marker::Send + 'static,
-    {
-        type Response = http::Response<tonic::body::Body>;
-        type Error = std::convert::Infallible;
-        type Future = BoxFuture<Self::Response, Self::Error>;
-        fn poll_ready(
-            &mut self,
-            _cx: &mut Context<'_>,
-        ) -> Poll<std::result::Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn call(&mut self, req: http::Request<B>) -> Self::Future {
-            match req.uri().path() {
-                "/raft.RaftControlPlane/AddLearner" => {
+                "/raft.Raft/AddLearner" => {
                     #[allow(non_camel_case_types)]
-                    struct AddLearnerSvc<T: RaftControlPlane>(pub Arc<T>);
-                    impl<
-                        T: RaftControlPlane,
-                    > tonic::server::UnaryService<super::AddLearnerReq>
+                    struct AddLearnerSvc<T: Raft>(pub Arc<T>);
+                    impl<T: Raft> tonic::server::UnaryService<super::AddLearnerReq>
                     for AddLearnerSvc<T> {
-                        type Response = super::ClientWriteRsp;
+                        type Response = super::MembershipRsp;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -1098,7 +865,7 @@ pub mod raft_control_plane_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as RaftControlPlane>::add_learner(&inner, request).await
+                                <T as Raft>::add_learner(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -1125,14 +892,12 @@ pub mod raft_control_plane_server {
                     };
                     Box::pin(fut)
                 }
-                "/raft.RaftControlPlane/ChangeMembership" => {
+                "/raft.Raft/ChangeMembership" => {
                     #[allow(non_camel_case_types)]
-                    struct ChangeMembershipSvc<T: RaftControlPlane>(pub Arc<T>);
-                    impl<
-                        T: RaftControlPlane,
-                    > tonic::server::UnaryService<super::ChangeMembershipReq>
+                    struct ChangeMembershipSvc<T: Raft>(pub Arc<T>);
+                    impl<T: Raft> tonic::server::UnaryService<super::ChangeMembershipReq>
                     for ChangeMembershipSvc<T> {
-                        type Response = super::ClientWriteRsp;
+                        type Response = super::MembershipRsp;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
@@ -1143,8 +908,7 @@ pub mod raft_control_plane_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as RaftControlPlane>::change_membership(&inner, request)
-                                    .await
+                                <T as Raft>::change_membership(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -1171,11 +935,10 @@ pub mod raft_control_plane_server {
                     };
                     Box::pin(fut)
                 }
-                "/raft.RaftControlPlane/Metrics" => {
+                "/raft.Raft/Metrics" => {
                     #[allow(non_camel_case_types)]
-                    struct MetricsSvc<T: RaftControlPlane>(pub Arc<T>);
-                    impl<T: RaftControlPlane> tonic::server::UnaryService<()>
-                    for MetricsSvc<T> {
+                    struct MetricsSvc<T: Raft>(pub Arc<T>);
+                    impl<T: Raft> tonic::server::UnaryService<()> for MetricsSvc<T> {
                         type Response = super::MetricsRsp;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
@@ -1184,7 +947,7 @@ pub mod raft_control_plane_server {
                         fn call(&mut self, request: tonic::Request<()>) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as RaftControlPlane>::metrics(&inner, request).await
+                                <T as Raft>::metrics(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -1233,7 +996,7 @@ pub mod raft_control_plane_server {
             }
         }
     }
-    impl<T> Clone for RaftControlPlaneServer<T> {
+    impl<T> Clone for RaftServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -1246,8 +1009,8 @@ pub mod raft_control_plane_server {
         }
     }
     /// Generated gRPC service name
-    pub const SERVICE_NAME: &str = "raft.RaftControlPlane";
-    impl<T> tonic::server::NamedService for RaftControlPlaneServer<T> {
+    pub const SERVICE_NAME: &str = "raft.Raft";
+    impl<T> tonic::server::NamedService for RaftServer<T> {
         const NAME: &'static str = SERVICE_NAME;
     }
 }

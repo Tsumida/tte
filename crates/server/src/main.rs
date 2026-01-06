@@ -233,7 +233,8 @@ async fn run_me(
         .rpc_addr
         .parse()?;
     let pair = TradePair::new(base, quote);
-    let (me, _bg_tasks) = MatchEngineService::run_match_engine(
+
+    let (me, raft_service, _bg_tasks) = MatchEngineService::run_match_engine(
         raft_config,
         pair.clone(),
         orderbook::OrderBook::new(pair),
@@ -256,13 +257,13 @@ async fn run_me(
             info!("match-engine down");
         }),
         tokio::spawn(async move {
-            // info!("raft sequencer listen at {}", raft_addr);
-            // Server::builder()
-            //     .add_service(RaftServiceServer::new(todo!()))
-            //     .serve(raft_addr)
-            //     .await
-            //     .unwrap();
-            // info!("match-engine down");
+            info!("raft sequencer listen at {}", raft_addr);
+            Server::builder()
+                .add_service(RaftServer::new(raft_service))
+                .serve(raft_addr)
+                .await
+                .unwrap();
+            info!("match-engine down");
         }),
     ];
 

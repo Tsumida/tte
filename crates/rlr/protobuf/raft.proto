@@ -160,6 +160,15 @@ service Raft {
 
   // Snapshot handles install snapshot RPC
   rpc Snapshot(stream SnapshotReq) returns (SnapshotRsp) {}
+
+  // AddLearner adds a new learner node to the Raft cluster
+  rpc AddLearner(AddLearnerReq) returns (MembershipRsp) {}
+
+  // ChangeMembership modifies the cluster membership configuration
+  rpc ChangeMembership(ChangeMembershipReq) returns (MembershipRsp) {}
+
+  // Metrics retrieves cluster metrics and status information
+  rpc Metrics(google.protobuf.Empty) returns (MetricsRsp) {}
 }
 
 // ========================= Control Plane ============================
@@ -183,7 +192,7 @@ message ChangeMembershipReq {
   bool retain = 2;
 }
 
-message ClientWriteRsp {
+message MembershipRsp {
   // The log id of the committed log entry.
   LogId log_id = 1;
 
@@ -214,16 +223,4 @@ message AppStateMachineInput {
 message AppStateMachineOutput {
   // Result data from state machine operation
   bytes data = 1;
-}
-
-// ApiService provides the key-value store API operations and Raft cluster management operations
-service RaftControlPlane {
-  // AddLearner adds a new learner node to the Raft cluster
-  rpc AddLearner(AddLearnerReq) returns (ClientWriteRsp) {}
-
-  // ChangeMembership modifies the cluster membership configuration
-  rpc ChangeMembership(ChangeMembershipReq) returns (ClientWriteRsp) {}
-
-  // Metrics retrieves cluster metrics and status information
-  rpc Metrics(google.protobuf.Empty) returns (MetricsRsp) {}
 }

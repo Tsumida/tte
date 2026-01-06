@@ -9,6 +9,7 @@ use tracing_subscriber;
 use tte_core::pbcode::oms::{self, match_engine_service_client, oms_service_client};
 
 mod parser;
+mod smart;
 
 /// 命令行参数结构体
 #[derive(Parser, Debug)]

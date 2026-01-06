@@ -1,9 +1,4 @@
-use std::{
-    collections::HashMap,
-    convert::TryInto,
-    pin::Pin,
-    sync::{Arc, OnceLock},
-};
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use crate::{
     AppStateMachine, AppStateMachineHandler, network,
@@ -11,7 +6,8 @@ use crate::{
     types::{AppNodeId, AppTypeConfig},
 };
 use futures::{Stream, StreamExt};
-use openraft::{Raft, Snapshot, SnapshotMeta, StoredMembership};
+use openraft::{Raft, SnapshotMeta, StoredMembership};
+use openraft::{Snapshot, async_runtime::WatchReceiver};
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
 use tokio::io;
 use tonic::{Status, async_trait};
@@ -120,8 +116,20 @@ impl RlrBuilder {
     }
 }
 
+// Raft的数据平面, 控制平面
+#[derive(Clone)]
+pub struct RaftService {
+    raft: Rlr,
+}
+
+impl RaftService {
+    pub fn new(rlr: Rlr) -> Self {
+        Self { raft: rlr }
+    }
+}
+
 #[async_trait]
-impl pb::raft_server::Raft for Rlr {
+impl pb::raft_server::Raft for RaftService {
     // 收到追加日志请求
     async fn append_entries(
         &self,
@@ -131,7 +139,7 @@ impl pb::raft_server::Raft for Rlr {
             .into_inner()
             .try_into()
             .map_err(|e| tonic::Status::internal(format!("Invalid AppendEntriesReq: {}", e)))?;
-        let rsp = self.append_entries(req).await.map_err(|e| {
+        let rsp = self.raft.append_entries(req).await.map_err(|e| {
             tonic::Status::internal(format!("AppendEntries operation failed: {}", e))
         })?;
 
@@ -151,6 +159,7 @@ impl pb::raft_server::Raft for Rlr {
             .map_err(|e| tonic::Status::internal(format!("Invalid VoteReq conversion: {}", e)))?;
 
         let vote_rsp = self
+            .raft
             .vote(vote_req)
             .await
             .map_err(|e| tonic::Status::internal(format!("Vote operation failed: {}", e)))?;
@@ -171,7 +180,7 @@ impl pb::raft_server::Raft for Rlr {
         let input = request.into_inner();
         let input_stream =
             input.filter_map(|r| async move { r.ok().and_then(|req| req.try_into().ok()) });
-        let output = self.stream_append(input_stream);
+        let output = self.raft.stream_append(input_stream);
         let output_stream = output.map(|result| Ok(result.into()));
         Ok(tonic::Response::new(Box::pin(output_stream)))
     }
@@ -234,6 +243,7 @@ impl pb::raft_server::Raft for Rlr {
 
         // Install the full snapshot
         let snapshot_resp = self
+            .raft
             .install_full_snapshot(vote, snapshot)
             .await
             .map_err(|e| Status::internal(format!("Snapshot installation failed: {}", e)))?;
@@ -242,6 +252,32 @@ impl pb::raft_server::Raft for Rlr {
         Ok(tonic::Response::new(pb::SnapshotRsp {
             vote: Some(snapshot_resp.vote),
         }))
+    }
+
+    async fn add_learner(
+        &self,
+        _: tonic::Request<pb::AddLearnerReq>,
+    ) -> std::result::Result<tonic::Response<pb::MembershipRsp>, tonic::Status> {
+        todo!()
+    }
+    /// ChangeMembership modifies the cluster membership configuration
+    async fn change_membership(
+        &self,
+        _: tonic::Request<pb::ChangeMembershipReq>,
+    ) -> std::result::Result<tonic::Response<pb::MembershipRsp>, tonic::Status> {
+        todo!()
+    }
+    /// Metrics retrieves cluster metrics and status information
+    async fn metrics(
+        &self,
+        _: tonic::Request<()>,
+    ) -> std::result::Result<tonic::Response<pb::MetricsRsp>, tonic::Status> {
+        let metric = self.raft.metrics().borrow_watched().clone();
+        let resp = pb::MetricsRsp {
+            membership: Some(metric.membership_config.membership().clone().into()),
+            other_metrics: metric.to_string(),
+        };
+        Ok(tonic::Response::new(resp))
     }
 }
 
