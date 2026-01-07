@@ -6,6 +6,7 @@ use crate::{
     types::{AppNodeId, AppTypeConfig},
 };
 use futures::{Stream, StreamExt};
+use getset::Getters;
 use openraft::{Raft, SnapshotMeta, StoredMembership};
 use openraft::{Snapshot, async_runtime::WatchReceiver};
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -117,8 +118,9 @@ impl RlrBuilder {
 }
 
 // Raft的数据平面, 控制平面
-#[derive(Clone)]
+#[derive(Clone, Getters)]
 pub struct RaftService {
+    #[get = "pub"]
     raft: Rlr,
 }
 
@@ -256,18 +258,30 @@ impl pb::raft_server::Raft for RaftService {
 
     async fn add_learner(
         &self,
-        _: tonic::Request<pb::AddLearnerReq>,
+        request: tonic::Request<pb::AddLearnerReq>,
     ) -> std::result::Result<tonic::Response<pb::MembershipRsp>, tonic::Status> {
-        todo!()
+        let new_node = request
+            .into_inner()
+            .node
+            .ok_or(tonic::Status::invalid_argument("expect node"))?;
+        // todo: don't re-add existing learner
+        let rsp = self
+            .raft
+            .add_learner(new_node.node_id, new_node, false)
+            .await
+            .map_err(|e| tonic::Status::internal(format!("AddLearner operation failed: {}", e)))?;
+        Ok(tonic::Response::new(rsp.try_into().map_err(|e| {
+            tonic::Status::internal(format!("Failed to convert MembershipRsp: {}", e))
+        })?))
     }
-    /// ChangeMembership modifies the cluster membership configuration
+
     async fn change_membership(
         &self,
         _: tonic::Request<pb::ChangeMembershipReq>,
     ) -> std::result::Result<tonic::Response<pb::MembershipRsp>, tonic::Status> {
-        todo!()
+        unimplemented!()
     }
-    /// Metrics retrieves cluster metrics and status information
+
     async fn metrics(
         &self,
         _: tonic::Request<()>,
@@ -279,17 +293,4 @@ impl pb::raft_server::Raft for RaftService {
         };
         Ok(tonic::Response::new(resp))
     }
-}
-
-#[inline]
-fn log_id_to_pb(log_id: &openraft::type_config::alias::LogIdOf<AppTypeConfig>) -> pb::LogId {
-    pb::LogId {
-        term: log_id.leader_id,
-        index: log_id.index,
-    }
-}
-
-#[inline]
-fn pb_to_log_id(pb: &pb::LogId) -> openraft::type_config::alias::LogIdOf<AppTypeConfig> {
-    openraft::type_config::alias::LogIdOf::<AppTypeConfig>::new(pb.term, pb.index)
 }

@@ -581,13 +581,10 @@ impl ApplyThread {
 
     fn print_trade_cmd(trade_cmd: &TradeCmd) {
         debug!(
-            "Processing trade cmd: trade_id={}, prev_trade_id={}, action={:?}, payload={}",
+            "Processing trade cmd: trade_id={}, prev_trade_id={}, payload={}",
             trade_cmd.trade_id,
             trade_cmd.prev_trade_id,
-            trade_cmd
-                .rpc_cmd
-                .as_ref()
-                .map(|c| oms::BizAction::from_i32(c.biz_action)),
+            // trade_cmd.biz_action,
             serde_json::to_string(&trade_cmd).unwrap()
         );
     }
@@ -645,7 +642,7 @@ impl ApplyThread {
         event_buffer: &mut SystemEvent,
     ) -> Result<(), OMSErr> {
         let mut no_op = vec![];
-        let action = oms::BizAction::from_i32(mr.action).ok_or_else(|| {
+        let action = oms::BizAction::try_from(mr.action).map_err(|_| {
             OMSErr::new(
                 err_code::ERR_OMS_INVALID_MATCH_RESULT,
                 "invalid biz_action in match result",

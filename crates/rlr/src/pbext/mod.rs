@@ -9,6 +9,7 @@ use openraft::entry::RaftEntry;
 use openraft::entry::RaftPayload;
 use openraft::raft::AppendEntriesRequest;
 use openraft::raft::AppendEntriesResponse;
+use openraft::raft::ClientWriteResponse;
 use openraft::raft::StreamAppendError;
 use openraft::raft::StreamAppendResult;
 use openraft::raft::VoteRequest;
@@ -389,5 +390,21 @@ impl fmt::Display for pb::Vote {
             self.leader_id(),
             if self.is_committed() { "Q" } else { "-" }
         )
+    }
+}
+
+impl TryFrom<ClientWriteResponse<AppTypeConfig>> for pb::MembershipRsp {
+    type Error = anyhow::Error;
+
+    fn try_from(cw_resp: ClientWriteResponse<AppTypeConfig>) -> Result<Self, Self::Error> {
+        Ok(pb::MembershipRsp {
+            log_id: Some(cw_resp.log_id.into()),
+            membership: Some(
+                cw_resp
+                    .membership
+                    .ok_or(anyhow::anyhow!("expect membership"))?
+                    .into(),
+            ),
+        })
     }
 }

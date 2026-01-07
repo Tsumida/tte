@@ -11,11 +11,12 @@ use tte_core::{
     pbcode::oms::{self},
     types::{BatchMatchReqTransfer, BatchMatchResultTransfer, TradePair},
 };
-use tte_rlr::RaftService;
+use tte_rlr::{AppStateMachineHandler, RaftService, Rlr};
 
 use crate::{
     egress::AllowAllEgress,
-    orderbook::{OrderBook, OrderBookErr},
+    orderbook::{OrderBook, OrderBookErr, OrderBookSnapshotHandler},
+    state_machine::OrderBookBizViewBuilder,
     types::{CmdWrapper, MatchCmd, MatchCmdOutput, MatchResultReceiver, SequencerSender},
 };
 use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
@@ -24,7 +25,7 @@ use tte_sequencer::raft::{RaftSequencerBuilder, RaftSequencerConfig};
 
 #[derive(Clone)]
 pub struct MatchEngineService {
-    #[allow(dead_code)]
+    raft_view: Rlr,
     submit_sender: SequencerSender, // todo: admin cmd
 }
 
@@ -75,6 +76,7 @@ impl MatchEngineService {
         > = RaftSequencerBuilder::new()
             .with_node_id(*raft_config.node_id())
             .with_db_path(PathBuf::from(raft_config.db_path()))
+            .with_snapshot_path(PathBuf::from(raft_config.snapshot_path()))
             .with_nodes(raft_config.nodes().clone())
             .with_request_receiver(req_recv)
             .with_state_machine(orderbook)
@@ -150,8 +152,10 @@ impl MatchEngineService {
         ];
 
         // init Sequencer, ApplyThread, MatchResultProducer, ConsumerTask
+        // let me_read_view = raft_service.clone();
         Ok((
             MatchEngineService {
+                raft_view: raft_service.raft().clone(),
                 submit_sender: req_send,
             },
             raft_service,
@@ -168,18 +172,45 @@ impl oms::match_engine_service_server::MatchEngineService for MatchEngineService
         &self,
         _request: tonic::Request<oms::TakeSnapshotReq>,
     ) -> std::result::Result<tonic::Response<oms::TakeSnapshotRsp>, tonic::Status> {
-        self.submit_sender
-            .send_timeout(
-                CmdWrapper::new(MatchCmd::MatchAdminCmd(oms::MatchAdminCmd {
-                    admin_action: oms::AdminAction::TakeSnapshot as i32,
-                })),
-                std::time::Duration::from_secs(1),
-            )
+        let (sender, recv) = tokio::sync::oneshot::channel();
+        match self
+            .raft_view
+            .with_state_machine(|sm: &mut AppStateMachineHandler<OrderBook>| {
+                Box::pin(async {
+                    let view = sm.read_state();
+                    match view.read().await.take_biz_snapshot() {
+                        Ok(snapshot) => {
+                            let _ = sender.send(snapshot);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to take snapshot: {}", e);
+                        }
+                    };
+                })
+            })
             .await
-            .map_err(|e| {
-                tonic::Status::internal(format!("failed to send take_snapshot command: {}", e))
-            })?;
-        Ok(tonic::Response::new(oms::TakeSnapshotRsp {}))
+        {
+            Err(e) => {
+                tracing::error!("Failed to take snapshot: {}", e);
+                return Err(tonic::Status::internal("Failed to take snapshot"));
+            }
+            Ok(_) => {
+                tracing::info!("Snapshot taken successfully.");
+            }
+        };
+
+        let snapshot = recv.await.expect("receive snapshot");
+        let builder = OrderBookBizViewBuilder::new();
+        match builder.persist_snapshot_json(snapshot).await {
+            Ok(_) => {
+                tracing::info!("Snapshot persisted successfully.");
+                Ok(tonic::Response::new(oms::TakeSnapshotRsp {}))
+            }
+            Err(e) => {
+                tracing::error!("Failed to persist snapshot: {}", e);
+                Err(tonic::Status::internal("Failed to persist snapshot"))
+            }
+        }
     }
 }
 
@@ -262,135 +293,6 @@ impl MatchReqConsumer {
     }
 }
 
-// struct OrderBookService {
-//     orderbook: OrderBook,
-//     submit_receiver: SequencerReceiver,
-//     match_result_sender: MatchResultSender,
-// }
-
-// #[deprecated]
-// struct ApplyThread {
-//     orderbook: OrderBook,
-//     submit_receiver: SequencerReceiver,
-//     match_result_sender: MatchResultSender,
-// }
-
-// impl ApplyThread {
-//     pub fn new(
-//         orderbook: OrderBook,
-//         submit_receiver: SequencerReceiver,
-//         match_result_sender: MatchResultSender,
-//     ) -> Self {
-//         ApplyThread {
-//             orderbook,
-//             submit_receiver,
-//             match_result_sender,
-//         }
-//     }
-
-//     pub async fn run(mut self) {
-//         info!("ApplyThread started");
-//         loop {
-//             let cmd_wrapper = self.submit_receiver.recv().await;
-//             if cmd_wrapper.is_none() {
-//                 break;
-//             }
-//             let cmd_wrapper = cmd_wrapper.expect("recv cmd_wrapper");
-//             self.orderbook.update_seq_id(cmd_wrapper.seq_id);
-//             match cmd_wrapper.inner {
-//                 MatchCmd::MatchReq(req) => {
-//                     self.handle_match_req(req).await;
-//                 }
-//                 MatchCmd::MatchAdminCmd(admin_cmd) => match admin_cmd.admin_action {
-//                     x if x == oms::AdminAction::TakeSnapshot as i32 => {
-//                         info!(
-//                             "TakeSnapshot admin command received, current seq_id: {}",
-//                             cmd_wrapper.seq_id
-//                         );
-
-//                         match self.orderbook.take_snapshot() {
-//                             Ok(snapshot) => {
-//                                 self.persist_snapshot_json(snapshot).await;
-//                             }
-//                             Err(e) => {
-//                                 error!("TakeSnapshot failed: {}", e);
-//                             }
-//                         }
-//                     }
-//                     _ => {}
-//                 },
-//             }
-//         }
-//         info!("ApplyThread stopped");
-//     }
-
-//     #[instrument(level = "info", skip_all)]
-//     pub async fn handle_match_req(&mut self, batch_match_req: oms::BatchMatchRequest) {
-//         let mut match_result_buffer = Vec::with_capacity(batch_match_req.cmds.len());
-//         for cmd in batch_match_req.cmds {
-//             let trade_id = cmd.trade_id;
-//             let prev_trade_id = cmd.prev_trade_id;
-//             let action =
-//                 oms::BizAction::from_i32(cmd.rpc_cmd.as_ref().unwrap().biz_action).unwrap(); // refactor
-//             let result = self.orderbook.process_trade_cmd(cmd);
-//             match result {
-//                 Ok(r) => match r.action {
-//                     oms::BizAction::FillOrder => {
-//                         let fill_result = r.fill_result.as_ref().unwrap();
-//                         let match_result =
-//                             MatchResult::into_fill_result_pb(trade_id, prev_trade_id, fill_result);
-//                         match_result_buffer.push(match_result);
-//                     }
-//                     oms::BizAction::CancelOrder => {
-//                         match_result_buffer.push(MatchResult::into_cancel_result_pb(
-//                             trade_id,
-//                             prev_trade_id,
-//                             r.cancel_result.as_ref().unwrap(),
-//                         ));
-//                     }
-//                     _ => {}
-//                 },
-//                 Err(e) => match_result_buffer.push(MatchResult::into_err(
-//                     trade_id,
-//                     prev_trade_id,
-//                     action,
-//                     e.to_string(),
-//                 )),
-//             }
-//         }
-//         // note: 基本上不可能; 即使发生可以通过重放恢复
-//         if let Err(e) = self
-//             .match_result_sender
-//             .send(CmdWrapper::new(oms::BatchMatchResult {
-//                 trade_pair: batch_match_req.trade_pair.clone(),
-//                 results: match_result_buffer,
-//             }))
-//             .await
-//         {
-//             error!("send match result error: {}", e);
-//         }
-//     }
-
-//     async fn persist_snapshot_json(&self, snapshot: OrderBookSnapshot) {
-//         let filename = format!(
-//             "./snapshot/orderbook_snapshot_{}_{}_{}.json",
-//             snapshot.trade_pair().pair(),
-//             snapshot.id_manager().seq_id(),
-//             chrono::Utc::now().timestamp_millis() as u64,
-//         );
-//         match serde_json::to_string_pretty(&snapshot) {
-//             Err(e) => {
-//                 error!("serialize snapshot to json failed: {}", e);
-//                 return;
-//             }
-//             Ok(json) => {
-//                 tokio::fs::write(&filename, json).await.unwrap();
-//                 info!("persisted snapshot to file: {}", filename);
-//             }
-//         }
-//     }
-// }
-
 pub struct MatchResultProducer {
     producer_cfg: ProducerConfig,
     producer: rdkafka::producer::FutureProducer,
@@ -469,6 +371,7 @@ impl<'a> MatchResultProducerBuilder<'a> {
         let cfg = self.cfg.expect("producer config");
         let producer = cfg.create_producer()?;
 
+        // key:string, value:string
         let headers = rdkafka::message::OwnedHeaders::new()
             .insert(rdkafka::message::Header {
                 key: "source",

@@ -3,6 +3,7 @@ use futures::TryStreamExt;
 use getset::Getters;
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -35,30 +36,35 @@ impl RaftSequencerConfig {
     //  RAFT_NODE_ID=1
     //  RAFT_NODES="1@127.0.0.1:7001,2@127.0.0.1:7002,3@127.0.0.1:7003"
     //  RAFT_DB_PATH="./data/raft_node_1"
-    pub fn from_env() -> Result<Self, anyhow::Error> {
-        let node_id: AppNodeId = std::env::var("RAFT_NODE_ID")?.parse()?;
+    pub fn from_env(
+        node_id_str: String,
+        nodes_str: Vec<(String, SocketAddr)>,
+        db_path_str: String,
+        snapshot_path_str: String,
+    ) -> Result<Self, anyhow::Error> {
+        tracing::info!(
+            "Loading RaftSequencerConfig from env: node_id={}, nodes={:?}, db_path={}, snapshot_path={}",
+            node_id_str,
+            nodes_str,
+            db_path_str,
+            snapshot_path_str
+        );
 
-        let nodes_str = std::env::var("RAFT_NODES")?;
+        let node_id: AppNodeId = node_id_str.parse()?;
         let mut nodes = HashMap::new();
-        for node_pair in nodes_str.split(',') {
-            let mut parts = node_pair.splitn(2, '@');
-            let id: AppNodeId = parts
-                .next()
-                .expect("Invalid RAFT_NODES format")
-                .parse()
-                .expect("Invalid node ID in RAFT_NODES");
-            let addr = parts.next().expect("Invalid RAFT_NODES format").to_string();
+        for (node_id_str, node_addr_str) in nodes_str {
+            let id: AppNodeId = node_id_str.parse().expect("Invalid node ID in RAFT_NODES");
             nodes.insert(
                 id,
                 pb::Node {
                     node_id: id,
-                    rpc_addr: addr,
+                    rpc_addr: node_addr_str.to_string(),
                 },
             );
         }
 
-        let db_path = std::env::var("RAFT_DB_PATH")?;
-        let snapshot_path = std::env::var("RAFT_SNAPSHOT_PATH").unwrap_or_else(|_| {
+        let db_path: String = db_path_str.parse().expect("invalid db_path");
+        let snapshot_path = snapshot_path_str.parse().unwrap_or_else(|_| {
             let mut path = db_path.clone();
             path.push_str("./snapshots"); // 一般在 bin/snapshots
             path
@@ -343,7 +349,7 @@ where
             }
         }
 
-        Ok(())
+        // Ok(())
     }
 
     async fn batch_propose(&self, inputs: Vec<AppStateMachineInput>) -> Result<(), anyhow::Error> {

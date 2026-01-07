@@ -5,6 +5,7 @@ use tonic::transport::Server;
 use tracing::info;
 use tte_core::pbcode::oms::match_engine_service_server;
 
+use tokio::net::lookup_host;
 use tte_core::{
     pbcode::oms::{self, oms_service_server},
     types::TradePair,
@@ -14,8 +15,10 @@ use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
 use tte_me::orderbook;
 use tte_me::service::MatchEngineService;
 use tte_oms::{oms::OMS, service::TradeSystem};
-use tte_rlr::{RaftClient, RaftServer};
+use tte_rlr::RaftServer;
 use tte_sequencer::raft::RaftSequencerConfig;
+
+mod test;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -221,11 +224,36 @@ async fn run_me(
                 auto_offset_reset: "earliest".to_string(), // auto
             },
         );
-    let raft_config = RaftSequencerConfig::from_env().expect("load raft config"); // todo: from AppConfig
 
     let _ = config.init_tracer().await?;
     config.print_args();
     let addr = config.grpc_server_endpoint().parse()?;
+
+    let node_id_str = std::env::var("RAFT_NODE_ID")?;
+    let nodes_str = std::env::var("RAFT_NODES")?;
+    let db_path_str = std::env::var("RAFT_DB_PATH")?;
+    let snapshot_path_str = std::env::var("RAFT_SNAPSHOT_PATH")?;
+
+    // 域名 -> IP + Port
+    let mut nodes = Vec::with_capacity(3);
+    for peer in nodes_str.split(',') {
+        let parts: Vec<&str> = peer.splitn(2, '@').collect();
+        if parts.len() != 2 {
+            panic!("Invalid RAFT_NODES format");
+        }
+
+        let node_id = parts[0].to_string();
+        let addr = parts[1].to_string();
+
+        // note: domain下任一个地址即可
+        let socket_addr = lookup_host(addr).await.unwrap().next().unwrap();
+        nodes.push((node_id, socket_addr));
+    }
+
+    let raft_config =
+        RaftSequencerConfig::from_env(node_id_str, nodes, db_path_str, snapshot_path_str)
+            .expect("load raft config"); // todo: from AppConfig
+
     let raft_addr: SocketAddr = raft_config
         .nodes()
         .get(&raft_config.node_id())

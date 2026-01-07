@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use futures::TryStreamExt;
+use getset::Getters;
 use openraft::{
     Membership, RaftTypeConfig, Snapshot, alias::SnapshotDataOf, entry::RaftEntry,
     storage::RaftStateMachine,
@@ -57,6 +58,10 @@ impl<S: AppStateMachine> AppStateMachineHandler<S> {
 
     pub async fn export_snapshot(&self) -> Vec<u8> {
         self.data.read().await.take_snapshot()
+    }
+
+    pub fn read_state(&self) -> Arc<RwLock<S>> {
+        self.data.clone()
     }
 }
 

@@ -238,9 +238,9 @@ pub(crate) trait OrderBookSnapshotHandler {
         depth: usize,
     ) -> Result<OrderBookLevelSnapshot, OrderBookErr>;
 
-    fn take_snapshot(&self) -> Result<OrderBookSnapshot, OrderBookErr>;
+    fn take_biz_snapshot(&self) -> Result<OrderBookSnapshot, OrderBookErr>;
 
-    fn from_snapshot(s: OrderBookSnapshot) -> Result<OrderBook, OrderBookErr>;
+    fn from_biz_snapshot(s: OrderBookSnapshot) -> Result<OrderBook, OrderBookErr>;
 }
 
 pub(crate) trait OrderBookRequestHandler {
@@ -769,11 +769,10 @@ impl OrderBookSnapshotHandler for OrderBook {
             depth,
             bid_orders,
             ask_orders,
-            // last_seq_id: self.seq_id,
         })
     }
 
-    fn take_snapshot(&self) -> Result<OrderBookSnapshot, OrderBookErr> {
+    fn take_biz_snapshot(&self) -> Result<OrderBookSnapshot, OrderBookErr> {
         Ok(OrderBookSnapshot {
             trade_pair: self.trade_pair.clone(),
             bid_orders: self.bid_orders.take_queue_snapshot(),
@@ -784,7 +783,7 @@ impl OrderBookSnapshotHandler for OrderBook {
         })
     }
 
-    fn from_snapshot(s: OrderBookSnapshot) -> Result<OrderBook, OrderBookErr> {
+    fn from_biz_snapshot(s: OrderBookSnapshot) -> Result<OrderBook, OrderBookErr> {
         let n = s.ask_orders.len() + s.bid_orders.len();
         let mut order_id_to_key = HashMap::with_capacity(2 * n);
         for v in s.bid_orders.iter() {

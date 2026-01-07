@@ -1,8 +1,31 @@
 use crate::{
-    orderbook::OrderBook,
+    orderbook::{OrderBook, OrderBookSnapshot},
     types::{CmdWrapper, MatchCmd, MatchCmdOutput},
 };
 use tte_rlr::{AppStateMachine, AppStateMachineInput, AppStateMachineOutput};
+
+pub struct OrderBookBizViewBuilder {}
+
+impl OrderBookBizViewBuilder {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub async fn persist_snapshot_json(
+        &self,
+        snapshot: OrderBookSnapshot,
+    ) -> Result<(), anyhow::Error> {
+        let filename = format!(
+            "./snapshot/orderbook_snapshot_{}_{}_{}.json",
+            snapshot.trade_pair().pair(),
+            snapshot.id_manager().seq_id(),
+            chrono::Utc::now().timestamp_millis() as u64,
+        );
+        let json_str = serde_json::to_string_pretty(&snapshot)?;
+        tokio::fs::write(&filename, json_str).await?; // already spawn_blocking
+        Ok(())
+    }
+}
 
 impl AppStateMachine for OrderBook {
     type Input = CmdWrapper<MatchCmd>;
@@ -23,21 +46,28 @@ impl AppStateMachine for OrderBook {
                 output.inner = MatchCmdOutput::MatchResult(result);
                 output
             }
+            // AdminCmd 也是业务配置变更, 不涉及快照等功能
             MatchCmd::MatchAdminCmd(admin_cmd) => match admin_cmd.admin_action {
+                // todo: 废弃TaskSnapshot命令，改为raft的快照
                 // x if x == oms::AdminAction::TakeSnapshot as i32 => {
-                //     // info!(
-                //     //     "TakeSnapshot admin command received, current seq_id: {}",
-                //     //     cmd_wrapper.seq_id
-                //     // );
+                //     tracing::info!(
+                //         "TakeSnapshot admin command received, current seq_id: {}",
+                //         cmd_wrapper.seq_id
+                //     );
 
-                //     // match self.take_snapshot() {
-                //     //     Ok(snapshot) => {
-                //     //         self.persist_snapshot_json(snapshot).await;
-                //     //     }
-                //     //     Err(e) => {
-                //     //         error!("TakeSnapshot failed: {}", e);
-                //     //     }
-                //     // }
+                //     let snapshot = self.take_biz_snapshot().map_err(|e| anyhow::anyhow!(e))?;
+                //     let builder = OrderBookBizViewBuilder {};
+                //     if let Err(e) = builder.persist_snapshot_json(snapshot).await {
+                //         tracing::error!("Failed to persist snapshot: {}", e);
+                //     } else {
+                //         tracing::info!("Snapshot persisted successfully.");
+                //     }
+                //     CmdWrapper {
+                //         inner: MatchCmdOutput::NoOp,
+                //         seq_id: cmd_wrapper.seq_id,
+                //         prev_seq_id: cmd_wrapper.prev_seq_id,
+                //         ts: cmd_wrapper.ts,
+                //     }
                 // }
                 _ => CmdWrapper {
                     inner: MatchCmdOutput::NoOp,

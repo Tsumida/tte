@@ -64,7 +64,7 @@ services:
       - SERVER_MODE=oms
       - TRACE_ENDPOINT=http://jaeger:4317
       - GRPC_SERVER_ENDPOINT=0.0.0.0:8080
-      - ME_RAFT_NODES="1@me_BTCUSDT_1:6001,2@me_BTCUSDT_2:6002,3@me_BTCUSDT_3:6003" # 监听窗口
+      - ME_RAFT_NODES="1@me_BTCUSDT_1:6001,2@me_BTCUSDT_2:6001,3@me_BTCUSDT_3:6001" # 监听窗口
       - ENV=dev
     ports:
       - "8080:8080"
@@ -89,12 +89,12 @@ services:
       - GRPC_SERVER_ENDPOINT=0.0.0.0:8081
       - ENV=dev
       - RAFT_NODE_ID=1
-      - RAFT_NODES="1@me_BTCUSDT_1:6001,2@me_BTCUSDT_2:6002,3@me_BTCUSDT_3:6003" # 监听窗口
+      - RAFT_NODES=1@me_BTCUSDT_1:6001,2@me_BTCUSDT_2:6001,3@me_BTCUSDT_3:6001 # 监听窗口
       - RAFT_DB_PATH=/data/me_BTCUSDT_1/db
       - RAFT_SNAPSHOT_PATH=/data/me_BTCUSDT_1/snapshots
     ports:
       - "8081:8081" # rpc port
-      - "6001:6001" # raft port
+      # - "6001:6001" # raft port
     depends_on:
       jaeger:
         condition: service_started
@@ -116,12 +116,12 @@ services:
       - GRPC_SERVER_ENDPOINT=0.0.0.0:8081
       - ENV=dev
       - RAFT_NODE_ID=2
-      - RAFT_NODES="1@me_BTCUSDT_1:6001,2@me_BTCUSDT_2:6002,3@me_BTCUSDT_3:6003" # 监听窗口
+      - RAFT_NODES=1@me_BTCUSDT_1:6001,2@me_BTCUSDT_2:6001,3@me_BTCUSDT_3:6001 # 监听窗口
       - RAFT_DB_PATH=/data/me_BTCUSDT_2/db
       - RAFT_SNAPSHOT_PATH=/data/me_BTCUSDT_2/snapshots
     ports:
       - "8082:8081" # rpc port
-      - "6002:6001" # raft port
+      # - "6002:6001" # raft port
     depends_on:
       jaeger:
         condition: service_started
@@ -143,12 +143,12 @@ services:
       - GRPC_SERVER_ENDPOINT=0.0.0.0:8081
       - ENV=dev
       - RAFT_NODE_ID=3
-      - RAFT_NODES="1@me_BTCUSDT_1:6001,2@me_BTCUSDT_2:6002,3@me_BTCUSDT_3:6003" # 监听窗口
+      - RAFT_NODES=1@me_BTCUSDT_1:6001,2@me_BTCUSDT_2:6001,3@me_BTCUSDT_3:6001 # 监听窗口
       - RAFT_DB_PATH=/data/me_BTCUSDT_3/db
       - RAFT_SNAPSHOT_PATH=/data/me_BTCUSDT_3/snapshots
     ports:
       - "8083:8081" # rpc port
-      - "6003:6001" # raft port
+      # - "6003:6001" # raft port
     depends_on:
       jaeger:
         condition: service_started
