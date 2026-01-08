@@ -1,7 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
 use futures::TryStreamExt;
-use getset::Getters;
 use openraft::{
     Membership, RaftTypeConfig, Snapshot, alias::SnapshotDataOf, entry::RaftEntry,
     storage::RaftStateMachine,

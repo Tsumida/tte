@@ -51,8 +51,8 @@ copy-snapshot:
 		echo "OMS container oms-server not running"; \
 	fi; \
 	\
-	for pair in BTCUSDT ETHUSDT; do \
-		container=me_$$pair; \
+	for suffix in BTCUSDT_1 BTCUSDT_2 BTCUSDT_3; do \
+		container=me_$$suffix; \
 		echo "==> Copying ME snapshots from $$container ..."; \
 		if docker ps --format '{{.Names}}' | grep -q "^$$container$$"; then \
 			docker cp $$container:/app/snapshot/. $$OUT_DIR/; \

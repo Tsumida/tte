@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use rust_decimal_macros::dec;
 use tonic::transport::Server;
 use tracing::info;
-use tte_core::pbcode::oms::match_engine_service_server;
+use tte_core::pbcode::oms::match_engine_service_server::MatchEngineServiceServer;
 
 use tokio::net::lookup_host;
 use tte_core::{
@@ -15,7 +15,7 @@ use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
 use tte_me::orderbook;
 use tte_me::service::MatchEngineService;
 use tte_oms::{oms::OMS, service::TradeSystem};
-use tte_rlr::RaftServer;
+use tte_rlr::{Raft, RaftServer};
 use tte_sequencer::raft::RaftSequencerConfig;
 
 mod test;
@@ -261,6 +261,7 @@ async fn run_me(
         .rpc_addr
         .parse()?;
     let pair = TradePair::new(base, quote);
+    let raft_nodes_cloned = raft_config.nodes().clone();
 
     let (me, raft_service, _bg_tasks) = MatchEngineService::run_match_engine(
         raft_config,
@@ -276,16 +277,19 @@ async fn run_me(
         tokio::spawn(async move {
             info!("match-engine listen at {}", addr);
             Server::builder()
-                .add_service(match_engine_service_server::MatchEngineServiceServer::new(
-                    me,
-                ))
+                .add_service(MatchEngineServiceServer::new(me))
                 .serve(addr)
                 .await
                 .unwrap();
             info!("match-engine down");
         }),
         tokio::spawn(async move {
-            info!("raft sequencer listen at {}", raft_addr);
+            raft_service
+                .initialize(raft_nodes_cloned)
+                .await
+                .expect("raft initialize");
+            info!("raft sequencer initialized and listen at {}", raft_addr);
+
             Server::builder()
                 .add_service(RaftServer::new(raft_service))
                 .serve(raft_addr)

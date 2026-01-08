@@ -59,7 +59,7 @@ services:
     image: mvp_server:latest
     container_name: oms-server
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=info
       - SERVICE_NAME=oms-server
       - SERVER_MODE=oms
       - TRACE_ENDPOINT=http://jaeger:4317
@@ -80,7 +80,7 @@ services:
     image: mvp_server:latest
     container_name: me_BTCUSDT_1
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=info
       - SERVICE_NAME=me_BTCUSDT_1
       - ME_BASE=BTC
       - ME_QUOTE=USDT
@@ -107,7 +107,7 @@ services:
     image: mvp_server:latest
     container_name: me_BTCUSDT_2
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=info
       - SERVICE_NAME=me_BTCUSDT_2
       - ME_BASE=BTC
       - ME_QUOTE=USDT
@@ -134,7 +134,7 @@ services:
     image: mvp_server:latest
     container_name: me_BTCUSDT_3
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=info
       - SERVICE_NAME=me_BTCUSDT_3
       - ME_BASE=BTC
       - ME_QUOTE=USDT
@@ -161,7 +161,7 @@ services:
   #   image: mvp_server:latest
   #   container_name: me_ETHUSDT
   #   environment:
-  #     - RUST_LOG=debug
+  #     - RUST_LOG=info
   #     - SERVICE_NAME=me_ETHUSDT
   #     - ME_BASE=ETH
   #     - ME_QUOTE=USDT

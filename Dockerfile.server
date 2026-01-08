@@ -50,7 +50,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # --- Stage 3: Runtime ---
 FROM debian:bookworm-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /app/snapshot && \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # 直接从 builder 根目录拿 cp 出来的二进制文件，避免去复杂的 target 目录下找
 COPY --from=builder /app/mvp_server /app/mvp_server

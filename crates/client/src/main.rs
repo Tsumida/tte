@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use tonic::transport::Channel;
 use tracing_subscriber;
+use tte_core::pbcode::oms::match_engine_service_client::MatchEngineServiceClient;
 use tte_core::pbcode::oms::{self, match_engine_service_client, oms_service_client};
 
 mod parser;
@@ -34,25 +35,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let oms_client = oms_service_client::OmsServiceClient::connect(format!("http://[::1]:8080"))
         .await
         .expect("init oms client failed");
-
-    let me_client_btc_usdt = match_engine_service_client::MatchEngineServiceClient::connect(
-        format!("http://[::1]:8081"),
+    let mut me_clients = init_me_client(
+        "BTC_USDT",
+        [
+            (1, "http://[::1]:8081"),
+            (2, "http://[::1]:8082"),
+            (3, "http://[::1]:8083"),
+        ],
     )
-    .await
-    .expect("init me client failed");
-
-    let me_client_eth_usdt = match_engine_service_client::MatchEngineServiceClient::connect(
-        format!("http://[::1]:18081"),
-    )
-    .await
-    .expect("init me client failed");
-
-    let mut me_clients = {
-        let mut map = HashMap::new();
-        map.insert("BTC_USDT".to_string(), me_client_btc_usdt);
-        map.insert("ETH_USDT".to_string(), me_client_eth_usdt);
-        map
-    };
+    .await?;
+    // map.insert("ETH_USDT".to_string(), me_client_eth_usdt);
 
     // 确定输入源：文件或标准输入
     let reader: Box<dyn BufRead> = match args.file_path {
@@ -111,8 +103,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // ME:Snapshot,BTC_USDT
                 let args: Vec<&str> = command[3..].split(',').collect();
                 let market = args[1];
-                let client = me_clients.get_mut(market).unwrap();
-                match send_me_admin_cmd(command[3..].to_string(), client).await {
+
+                let clients = me_clients.get_mut(market).unwrap();
+                match send_me_admin_cmd(command[3..].to_string(), clients).await {
                     Ok(_) => {
                         tracing::info!("ME command processed successfully: {}", command)
                     }
@@ -127,6 +120,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+async fn init_me_client(
+    trade_pair: &str,
+    addrs: [(u64, &str); 3],
+) -> Result<HashMap<String, HashMap<String, MatchEngineServiceClient<Channel>>>, anyhow::Error> {
+    let mut clients = HashMap::new(); // 3节点
+    for (node_id, addr) in addrs {
+        let me_client =
+            match_engine_service_client::MatchEngineServiceClient::connect(addr.to_string())
+                .await
+                .expect("init me client failed");
+        clients.insert(node_id.to_string(), me_client);
+    }
+
+    Ok(HashMap::from([(trade_pair.to_string(), clients)]))
 }
 
 async fn place_order(
@@ -173,16 +182,21 @@ async fn send_oms_admin_cmd(
 
 async fn send_me_admin_cmd(
     line: String,
-    client: &mut match_engine_service_client::MatchEngineServiceClient<Channel>,
+    clients: &mut HashMap<String, match_engine_service_client::MatchEngineServiceClient<Channel>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parts: Vec<&str> = line.trim().split(',').collect();
-
     if parts[0] == "Snapshot" {
-        let response = client
-            .take_snapshot(oms::TakeSnapshotReq {})
-            .await
-            .expect("take snapshot failed");
-        tracing::info!("OrderBook Snapshot: {:?}", response.into_inner());
+        for (node_id, client) in clients.iter_mut() {
+            let response = client
+                .take_snapshot(oms::TakeSnapshotReq {})
+                .await
+                .expect("take snapshot failed");
+            tracing::info!(
+                "OrderBook Snapshot at node {}: {:?}",
+                node_id,
+                response.into_inner()
+            );
+        }
     } else {
         tracing::error!("Unknown ME command: {}", parts[0]);
     }

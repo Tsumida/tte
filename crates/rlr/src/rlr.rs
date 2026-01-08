@@ -7,7 +7,7 @@ use crate::{
 };
 use futures::{Stream, StreamExt};
 use getset::Getters;
-use openraft::{Raft, SnapshotMeta, StoredMembership};
+use openraft::{Raft, SnapshotMeta, StoredMembership, error::InitializeError, membership};
 use openraft::{Snapshot, async_runtime::WatchReceiver};
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
 use tokio::io;
@@ -127,6 +127,13 @@ pub struct RaftService {
 impl RaftService {
     pub fn new(rlr: Rlr) -> Self {
         Self { raft: rlr }
+    }
+
+    pub async fn initialize(
+        &self,
+        membership: HashMap<AppNodeId, pb::Node>,
+    ) -> Result<(), openraft::error::RaftError<AppTypeConfig, InitializeError<AppTypeConfig>>> {
+        self.raft.initialize(membership).await
     }
 }
 

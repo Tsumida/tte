@@ -324,6 +324,15 @@ where
             if batch.is_empty() {
                 continue;
             }
+            // ignore if not reader
+            if !self.raft.is_leader() {
+                tracing::info!(
+                    "RaftSequencer: follower or learner, skip processing (batch size={})",
+                    batch.len()
+                );
+                continue;
+            }
+
             // todo: 格外注意
             // propose分配seq_id, 但未持久化, 只有commit后通过append_entries更新seq_id. 不能让日志形成空洞, 不然同步会有问题
             let mut current_seq = self.seq_id.load(Ordering::SeqCst);
