@@ -42,10 +42,6 @@ impl OutputEvent for MatchResult {
 fn create_test_buffer<T: OutputEvent>() -> (MsgBuffer<T>, TempDir) {
     let tmp_dir = TempDir::new().unwrap();
     let config = MsgBufferConfig {
-        ring_buffer: RingBufferConfig {
-            capacity: 100,
-            overwrite_on_full: true,
-        },
         storage: StorageConfig {
             db_path: tmp_dir.path().to_str().unwrap().to_string(),
             cf_name: "test_buffer".to_string(),

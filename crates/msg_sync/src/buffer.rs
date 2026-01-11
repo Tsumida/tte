@@ -1,20 +1,17 @@
 use crate::{
     error::{MsgBufError, Result},
     metrics::MsgBufMetrics,
-    ring_buffer::{RingBuffer, RingBufferConfig},
     storage::{PersistentStorage, StorageConfig},
     traits::{BufferStats, MsgBufReader, MsgBufSync, MsgBufWriter, OutputEvent},
 };
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Configuration for the message buffer
 #[derive(Debug, Clone)]
 pub struct MsgBufferConfig {
-    /// Configuration for the hot (in-memory) buffer
-    pub ring_buffer: RingBufferConfig,
     /// Configuration for the cold (persistent) storage
     pub storage: StorageConfig,
     /// Component name for metrics (e.g., "match_engine", "oms")
@@ -24,7 +21,6 @@ pub struct MsgBufferConfig {
 impl Default for MsgBufferConfig {
     fn default() -> Self {
         Self {
-            ring_buffer: RingBufferConfig::default(),
             storage: StorageConfig::default(),
             component: "msg_buffer".to_string(),
         }
@@ -34,7 +30,6 @@ impl Default for MsgBufferConfig {
 /// Unified message buffer combining hot (RingBuffer) and cold (RocksDB) storage
 /// This is the main implementation of the message synchronization system
 pub struct MsgBuffer<T: OutputEvent> {
-    hot: RingBuffer<T>,
     cold: PersistentStorage<T>,
     metrics: Option<Arc<MsgBufMetrics>>,
     config: MsgBufferConfig,
@@ -66,11 +61,9 @@ impl Default for BufferMetadata {
 impl<T: OutputEvent> MsgBuffer<T> {
     /// Create a new message buffer
     pub fn new(config: MsgBufferConfig) -> Result<Self> {
-        let hot = RingBuffer::new(config.ring_buffer.clone());
         let cold = PersistentStorage::new(config.storage.clone())?;
 
         Ok(Self {
-            hot,
             cold,
             metrics: None,
             config,
@@ -85,47 +78,27 @@ impl<T: OutputEvent> MsgBuffer<T> {
         Ok(buffer)
     }
 
-    /// Get a message by ID, checking hot buffer first, then cold storage
+    /// Get a message by ID from persistent storage
     pub async fn get(&self, id: u64) -> Result<Option<T>> {
         let start = Instant::now();
-
-        // Try hot buffer first
-        match self.hot.get(id) {
-            Ok(Some(msg)) => {
-                let duration = start.elapsed().as_secs_f64() * 1000.0;
-                if let Some(metrics) = &self.metrics {
-                    metrics.record_query(duration, true, true);
-                }
-                return Ok(Some(msg));
-            }
-            // Both fall through to cold storage
-            Ok(None) => {}
-            Err(e) => {
-                warn!(id = id, error = ?e, "Error querying hot buffer");
-            }
-        }
-
-        // Try cold storage
         let result = self.cold.get(id);
         let duration = start.elapsed().as_secs_f64() * 1000.0;
-
         if let Some(metrics) = &self.metrics {
             metrics.record_query(duration, result.is_ok(), false);
         }
-
         result
     }
 
     /// Get a range of messages [start_id, start_id + limit)
     /// First tries to get from hot buffer, then fills gaps from cold storage
-    pub async fn get_range(&self, start_id: u64, limit: usize) -> Result<Vec<T>> {
+    pub async fn get_range_may_sync(&self, start_id: u64, limit: usize) -> Result<Vec<T>> {
         if limit == 0 {
             return Ok(vec![]);
         }
 
         let start = Instant::now();
 
-        // Check if start_id is beyond our max_id
+        // error: max_id < start_id
         let metadata = self.metadata.read().await;
         if let Some(max_id) = metadata.max_id {
             if start_id > max_id {
@@ -139,7 +112,7 @@ impl<T: OutputEvent> MsgBuffer<T> {
             }
         }
 
-        // Check if start_id has been trimmed
+        // error: start_id < min_id, data trimmed
         if let Some(min_id) = metadata.min_id {
             if start_id < min_id {
                 if let Some(metrics) = &self.metrics {
@@ -153,26 +126,12 @@ impl<T: OutputEvent> MsgBuffer<T> {
         }
         drop(metadata);
 
-        // Try hot buffer first
-        let hot_result = self.hot.get_range(start_id, limit)?;
-
-        if hot_result.len() >= limit {
-            // Got everything from hot buffer
-            let duration = start.elapsed().as_secs_f64() * 1000.0;
-            if let Some(metrics) = &self.metrics {
-                metrics.record_query(duration, true, true);
-            }
-            return Ok(hot_result);
-        }
-
-        // Need to get some or all from cold storage
+        // Fetch directly from persistent storage (single source of truth)
         let cold_result = self.cold.get_range(start_id, limit)?;
         let duration = start.elapsed().as_secs_f64() * 1000.0;
-
         if let Some(metrics) = &self.metrics {
             metrics.record_query(duration, true, false);
         }
-
         Ok(cold_result)
     }
 
@@ -199,7 +158,6 @@ impl<T: OutputEvent> MsgBuffer<T> {
 impl<T: OutputEvent> Clone for MsgBuffer<T> {
     fn clone(&self) -> Self {
         Self {
-            hot: self.hot.clone(),
             cold: self.cold.clone(),
             metrics: self.metrics.clone(),
             config: self.config.clone(),
@@ -216,7 +174,7 @@ impl<T: OutputEvent> MsgBufSync<T> for MsgBuffer<T> {
             limit = limit,
             "Syncing messages from buffer"
         );
-        self.get_range(start_id, limit).await
+        self.get_range_may_sync(start_id, limit).await
     }
 
     async fn max_id(&self) -> Result<Option<u64>> {
@@ -230,12 +188,7 @@ impl<T: OutputEvent> MsgBufSync<T> for MsgBuffer<T> {
     }
 
     async fn contains(&self, id: u64) -> Result<bool> {
-        // Check hot buffer first
-        if self.hot.contains(id)? {
-            return Ok(true);
-        }
-
-        // Check cold storage
+        // Check cold storage (single truth)
         self.cold.contains(id)
     }
 }
@@ -275,11 +228,6 @@ impl<T: OutputEvent> MsgBufWriter<T> for MsgBuffer<T> {
             }
         }
 
-        // Then update hot buffer (best effort)
-        if let Err(e) = self.hot.push_batch(batch) {
-            warn!(error = ?e, "Failed to push batch to hot buffer, but persisted to cold storage");
-        }
-
         // Update metadata
         self.update_metadata(min_id, max_id).await?;
 
@@ -287,10 +235,9 @@ impl<T: OutputEvent> MsgBufWriter<T> for MsgBuffer<T> {
         if let Some(metrics) = &self.metrics {
             metrics.record_append(count as u64, duration, true);
 
-            // Update buffer size metrics
-            let hot_size = self.hot.len().unwrap_or(0);
+            // Update buffer size metrics (no hot buffer)
             let cold_count = self.cold.count().unwrap_or(0);
-            metrics.update_buffer_size(cold_count, hot_size);
+            metrics.update_buffer_size(cold_count, 0);
         }
 
         let mut metadata = self.metadata.write().await;
@@ -317,10 +264,7 @@ impl<T: OutputEvent> MsgBufWriter<T> for MsgBuffer<T> {
             }
         };
 
-        // Then trim hot buffer
-        let hot_deleted = self.hot.trim(before_id).unwrap_or(0);
-
-        let total_deleted = cold_deleted + hot_deleted;
+        let total_deleted = cold_deleted;
 
         // Update metadata
         let mut metadata = self.metadata.write().await;
@@ -355,17 +299,15 @@ impl<T: OutputEvent> MsgBufWriter<T> for MsgBuffer<T> {
 
     async fn stats(&self) -> Result<BufferStats> {
         let metadata = self.metadata.read().await;
-        let hot_count = self.hot.len()?;
         let cold_count = self.cold.count()?;
-        let hit_rate = self.hot.hit_rate()?;
 
         Ok(BufferStats {
             total_count: cold_count,
-            hot_count,
+            hot_count: 0,
             cold_count,
             min_id: metadata.min_id,
             max_id: metadata.max_id,
-            hit_rate,
+            hit_rate: 0.0,
             bytes_used: 0, // TODO: implement proper size calculation
             last_trim_ts: metadata.last_trim_ts,
         })
@@ -442,10 +384,6 @@ mod tests {
     fn create_test_buffer() -> (MsgBuffer<TestEvent>, TempDir) {
         let tmp_dir = TempDir::new().unwrap();
         let config = MsgBufferConfig {
-            ring_buffer: RingBufferConfig {
-                capacity: 10,
-                overwrite_on_full: true,
-            },
             storage: StorageConfig {
                 db_path: tmp_dir.path().to_str().unwrap().to_string(),
                 cf_name: "test_buffer".to_string(),
@@ -479,7 +417,7 @@ mod tests {
         assert_eq!(msg.id(), 3);
 
         // Get range
-        let range = buffer.get_range(2, 3).await.unwrap();
+        let range = buffer.get_range_may_sync(2, 3).await.unwrap();
         assert_eq!(range.len(), 3);
         assert_eq!(range[0].id(), 2);
         assert_eq!(range[2].id(), 4);
@@ -524,7 +462,7 @@ mod tests {
         assert!(deleted >= 4);
 
         // Should get DataTrimmed error for id < 5
-        let result = buffer.get_range(1, 10).await;
+        let result = buffer.get_range_may_sync(1, 10).await;
         assert!(matches!(result, Err(MsgBufError::DataTrimmed { .. })));
 
         // Should still be able to get id >= 5

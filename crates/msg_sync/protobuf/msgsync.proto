@@ -1,0 +1,22 @@
+syntax = "proto3";
+package msgsync;
+
+// Simple sync RPC for gap-fill requests
+message SyncRequest {
+  string flow_name = 1; // optional identifier
+  uint64 start_id = 2; // first id to request
+  uint64 count = 3; // max number of events requested
+}
+
+message SyncResponse {
+  repeated bytes events = 1; // serialized events (opaque bytes)
+  uint64 start_id = 2;
+  uint64 end_id = 3;
+  bool is_complete = 4; // true if the response covers requested range fully
+}
+
+//
+service MsgSync {
+  // 
+  rpc SyncEvents (SyncRequest) returns (SyncResponse);
+}
