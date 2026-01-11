@@ -273,6 +273,9 @@ async fn run_me(
     .await
     .expect("start match engine service");
 
+    let raft_initialize_handler = raft_service.clone();
+
+    // handle ME and Raft RPCs
     let handles = vec![
         tokio::spawn(async move {
             info!("match-engine listen at {}", addr);
@@ -284,12 +287,6 @@ async fn run_me(
             info!("match-engine down");
         }),
         tokio::spawn(async move {
-            raft_service
-                .initialize(raft_nodes_cloned)
-                .await
-                .expect("raft initialize");
-            info!("raft sequencer initialized and listen at {}", raft_addr);
-
             Server::builder()
                 .add_service(RaftServer::new(raft_service))
                 .serve(raft_addr)
@@ -298,6 +295,13 @@ async fn run_me(
             info!("match-engine down");
         }),
     ];
+
+    // Initialize after network started
+    raft_initialize_handler
+        .initialize(raft_nodes_cloned)
+        .await
+        .expect("raft initialize");
+    info!("raft sequencer initialized and listen at {}", raft_addr);
 
     if let Some(exit_signal) = exit_signal {
         exit_signal.await?;

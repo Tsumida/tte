@@ -3,7 +3,8 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
-use rdkafka::Message;
+use chrono::offset;
+use rdkafka::{Message, consumer::Consumer};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{debug, info, instrument};
 
@@ -266,7 +267,7 @@ impl MatchReqConsumer {
                 }
                 Ok(m) => {
                     if let Some(payload) = m.payload() {
-                        self.process_kafka_msg(payload).await;
+                        self.process_kafka_msg(m.offset(), payload).await;
                     }
                 }
             }
@@ -276,7 +277,7 @@ impl MatchReqConsumer {
     }
 
     #[instrument(level = "info", skip_all)]
-    async fn process_kafka_msg(&self, payload: &[u8]) {
+    pub async fn process_kafka_msg(&self, _: i64, payload: &[u8]) {
         let batch_match_req = BatchMatchReqTransfer::deserialize(payload).expect("deserialize");
         let cmd = MatchCmd::MatchReq(batch_match_req);
         let cmd_wrapper = CmdWrapper::new(cmd);
@@ -291,6 +292,10 @@ impl MatchReqConsumer {
             .await
             .expect("send to sequencer");
     }
+
+    // pub async fn commit(&self, offset: i64) -> Result<(), rdkafka::error::KafkaError> {
+    //     // todo:
+    // }
 }
 
 pub struct MatchResultProducer {

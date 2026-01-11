@@ -55,6 +55,10 @@ impl ConsumerConfig {
             .set("bootstrap.servers", &self.bootstrap_servers)
             .set("group.id", &self.group_id)
             .set("auto.offset.reset", &self.auto_offset_reset.to_string())
+            // no auto commit
+            .set("enable.auto.commit", "false")
+            // insync = all
+            .set("isolation.level", "read_committed")
             .create()?;
 
         consumer
