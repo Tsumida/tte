@@ -34,8 +34,8 @@ mod me {
             raft_config,
             trade_pair.clone(),
             orderbook::OrderBook::new(trade_pair.clone()),
-            config.kafka_producers().clone(),
-            config.kafka_consumers().clone(),
+            config.producers().clone(),
+            config.consumers().clone(),
         )
         .await
         .expect("start match engine service");
@@ -56,7 +56,7 @@ mod me {
         let quote = "USDT";
         let mut app_config = AppConfig::dev();
         app_config
-            .with_kafka_producer(
+            .with_producer(
                 &format!("match_result_{}{}", base, quote),
                 ProducerConfig {
                     trade_pair: TradePair::new(base, quote),
@@ -66,7 +66,7 @@ mod me {
                     message_timeout_ms: 5000,
                 },
             )
-            .with_kafka_consumer(
+            .with_consumer(
                 &format!("match_req_{}{}", base, quote),
                 ConsumerConfig {
                     trade_pair: TradePair::new(base, quote),

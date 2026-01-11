@@ -16,6 +16,7 @@ members = [
     "crates/client",
     "crates/testkit",
     "crates/tests",
+    "crates/msg_sync",
 ]
 
 [workspace.dependencies]
@@ -42,6 +43,7 @@ opentelemetry-semantic-conventions = "0.31.0"
 tracing-appender = "0.2.3"
 opentelemetry-appender-tracing = "0.31.1"
 tonic-tracing-opentelemetry = "0.32.0"
+prometheus = "0.14"
 rdkafka = "0.38.0"
 futures = "0.3.31"
 # clap = { version = "4.5.53", features = ["derive"] }

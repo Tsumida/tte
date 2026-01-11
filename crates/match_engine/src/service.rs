@@ -3,10 +3,9 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
-use chrono::offset;
 use rdkafka::{Message, consumer::Consumer};
 use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::{debug, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 use tte_core::{
     pbcode::oms::{self},
@@ -27,6 +26,7 @@ use tte_sequencer::raft::{RaftSequencerBuilder, RaftSequencerConfig};
 #[derive(Clone)]
 pub struct MatchEngineService {
     raft_view: Rlr,
+    #[allow(dead_code)]
     submit_sender: SequencerSender, // todo: admin cmd
 }
 
@@ -269,6 +269,19 @@ impl MatchReqConsumer {
                     if let Some(payload) = m.payload() {
                         self.process_kafka_msg(m.offset(), payload).await;
                     }
+                    match self
+                        .consumer
+                        .commit_message(&m, rdkafka::consumer::CommitMode::Async)
+                    {
+                        Err(e) => {
+                            error!(
+                                "Failed to commit message with offset={}: {:?}",
+                                m.offset(),
+                                e
+                            );
+                        }
+                        Ok(_) => { /* committed successfully */ }
+                    }
                 }
             }
         }
@@ -292,10 +305,6 @@ impl MatchReqConsumer {
             .await
             .expect("send to sequencer");
     }
-
-    // pub async fn commit(&self, offset: i64) -> Result<(), rdkafka::error::KafkaError> {
-    //     // todo:
-    // }
 }
 
 pub struct MatchResultProducer {
@@ -374,7 +383,7 @@ impl<'a> MatchResultProducerBuilder<'a> {
 
     pub fn build(mut self) -> Result<MatchResultProducer, Box<dyn std::error::Error>> {
         let cfg = self.cfg.expect("producer config");
-        let producer = cfg.create_producer()?;
+        let producer = cfg.create_kafka_producer()?;
 
         // key:string, value:string
         let headers = rdkafka::message::OwnedHeaders::new()

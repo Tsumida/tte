@@ -19,7 +19,7 @@ pub struct ProducerConfig {
 }
 
 impl ProducerConfig {
-    pub fn create_producer(
+    pub fn create_kafka_producer(
         &self,
     ) -> Result<rdkafka::producer::FutureProducer, rdkafka::error::KafkaError> {
         let producer: rdkafka::producer::FutureProducer = rdkafka::config::ClientConfig::new()
@@ -55,10 +55,8 @@ impl ConsumerConfig {
             .set("bootstrap.servers", &self.bootstrap_servers)
             .set("group.id", &self.group_id)
             .set("auto.offset.reset", &self.auto_offset_reset.to_string())
-            // no auto commit
             .set("enable.auto.commit", "false")
-            // insync = all
-            .set("isolation.level", "read_committed")
+            .set("isolation.level", "read_committed") // insync = all
             .create()?;
 
         consumer

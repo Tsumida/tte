@@ -7,7 +7,7 @@ use crate::{
 };
 use futures::{Stream, StreamExt};
 use getset::Getters;
-use openraft::{Raft, SnapshotMeta, StoredMembership, error::InitializeError, membership};
+use openraft::{Raft, SnapshotMeta, StoredMembership, error::InitializeError};
 use openraft::{Snapshot, async_runtime::WatchReceiver};
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
 use tokio::io;
@@ -17,17 +17,6 @@ use tracing::{debug, error, instrument};
 use crate::pbcode::raft as pb;
 
 pub type Rlr = Raft<AppTypeConfig>;
-
-// struct SnapshotSession {
-//     last_log_id: Option<pb::LogId>,
-//     buf: Vec<u8>,
-// }
-
-// #[inline]
-// fn snapshot_sessions() -> &'static Mutex<HashMap<(u64, u64), SnapshotSession>> {
-//     static SESSIONS: OnceLock<Mutex<HashMap<(u64, u64), SnapshotSession>>> = OnceLock::new();
-//     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
-// }
 
 pub struct RlrBuilder {
     raft_config: Option<openraft::Config>,

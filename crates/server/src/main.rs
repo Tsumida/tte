@@ -15,7 +15,7 @@ use tte_infra::kafka::{ConsumerConfig, ProducerConfig};
 use tte_me::orderbook;
 use tte_me::service::MatchEngineService;
 use tte_oms::{oms::OMS, service::TradeSystem};
-use tte_rlr::{Raft, RaftServer};
+use tte_rlr::RaftServer;
 use tte_sequencer::raft::RaftSequencerConfig;
 
 mod test;
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = AppConfig::dev();
     config
-        .with_kafka_producer(
+        .with_producer(
             "match_req_BTCUSDT",
             ProducerConfig {
                 trade_pair: TradePair::new("BTC", "USDT"),
@@ -52,7 +52,7 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
                 message_timeout_ms: 5000,
             },
         )
-        .with_kafka_producer(
+        .with_producer(
             "match_req_ETHUSDT",
             ProducerConfig {
                 trade_pair: TradePair::new("ETH", "USDT"),
@@ -62,7 +62,7 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
                 message_timeout_ms: 5000,
             },
         )
-        .with_kafka_producer(
+        .with_producer(
             "order_events",
             ProducerConfig {
                 // todo: 考虑去掉
@@ -73,7 +73,7 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
                 message_timeout_ms: 5000,
             },
         )
-        .with_kafka_producer(
+        .with_producer(
             "ledger_events",
             ProducerConfig {
                 // todo: 考虑去掉
@@ -84,7 +84,7 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
                 message_timeout_ms: 5000,
             },
         )
-        .with_kafka_consumer(
+        .with_consumer(
             "match_result_BTCUSDT",
             ConsumerConfig {
                 trade_pair: TradePair::new("BTC", "USDT"),
@@ -94,7 +94,7 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
                 auto_offset_reset: "earliest".to_string(), // auto
             },
         )
-        .with_kafka_consumer(
+        .with_consumer(
             "match_result_ETHUSDT",
             ConsumerConfig {
                 trade_pair: TradePair::new("ETH", "USDT"),
@@ -156,26 +156,26 @@ async fn run_oms() -> Result<(), Box<dyn std::error::Error>> {
     let (svc, _bg_tasks) = TradeSystem::run_trade_system(
         oms,
         config
-            .kafka_producers()
+            .producers()
             .iter()
             .filter(|(_, v)| v.topic().starts_with("match_req_"))
             .map(|(_, v)| (v.trade_pair().clone(), v.clone()))
             .collect(),
         config
-            .kafka_consumers()
+            .consumers()
             .iter()
             .filter(|(_, v)| v.topics()[0].starts_with("match_result_"))
             .map(|(_, v)| (v.trade_pair().clone(), v.clone()))
             .collect(),
         config
-            .kafka_producers()
+            .producers()
             .iter()
             .find(|(k, _)| *k == "ledger_events")
             .unwrap()
             .1
             .clone(),
         config
-            .kafka_producers()
+            .producers()
             .iter()
             .find(|(k, _)| *k == "order_events")
             .unwrap()
@@ -204,7 +204,7 @@ async fn run_me(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = AppConfig::dev();
     config
-        .with_kafka_producer(
+        .with_producer(
             &format!("match_result_{}{}", base, quote),
             ProducerConfig {
                 trade_pair: TradePair::new(base, quote),
@@ -214,7 +214,7 @@ async fn run_me(
                 message_timeout_ms: 5000,
             },
         )
-        .with_kafka_consumer(
+        .with_consumer(
             &format!("match_req_{}{}", base, quote),
             ConsumerConfig {
                 trade_pair: TradePair::new(base, quote),
@@ -267,8 +267,8 @@ async fn run_me(
         raft_config,
         pair.clone(),
         orderbook::OrderBook::new(pair),
-        config.kafka_producers().clone(),
-        config.kafka_consumers().clone(),
+        config.producers().clone(),
+        config.consumers().clone(),
     )
     .await
     .expect("start match engine service");

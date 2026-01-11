@@ -751,7 +751,7 @@ impl MatchRequestSender {
 
     async fn init(mut self) -> Result<Self, OMSErr> {
         for (pair, cfg) in self.configs.iter() {
-            let producer = cfg.create_producer().map_err(|e| {
+            let producer = cfg.create_kafka_producer().map_err(|e| {
                 tracing::error!("Failed to create Kafka producer: {:?}", e);
                 OMSErr::new(err_code::ERR_INTERNAL, "kafka producer create failed")
             })?;
@@ -957,9 +957,11 @@ impl TradeEventBusBuilder {
         if let (Some(order_cfg), Some(ledger_cfg)) =
             (self.order_producer_cfg, self.ledger_producer_cfg)
         {
-            let order_producer = order_cfg.create_producer().map_err(|_| "order producer")?;
+            let order_producer = order_cfg
+                .create_kafka_producer()
+                .map_err(|_| "order producer")?;
             let ledger_producer = ledger_cfg
-                .create_producer()
+                .create_kafka_producer()
                 .map_err(|_| "ledger producer")?;
             Ok(TradeEventBus {
                 receiver: self.receiver,
