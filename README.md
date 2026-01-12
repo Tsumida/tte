@@ -11,4 +11,5 @@ It's a deterministic state machine based on [Openraft](https://github.com/databe
 
 
 # Design
-[Document (Chinese)](https://ai.feishu.cn/wiki/HQCIwBlqZik5bhkPKcIcHJbC)
+[Document (Chinese)](https://my.feishu.cn/wiki/HQCIwBlqZik5bhkPKcIcHJbCnVc?from=from_copylink)
+
